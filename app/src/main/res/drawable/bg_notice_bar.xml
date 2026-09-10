@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Translucent red-glass fill: home background bleeds through -->
+    <item>
+        <shape android:shape="rectangle">
+            <solid android:color="@color/glass_panel"/>
+            <corners android:radius="12dp"/>
+        </shape>
+    </item>
+    <!-- Diagonal glass sheen: soft highlight top-left fading to nothing, giving the
+         frosted/blurred-glass look without a real (expensive) blur render -->
+    <item>
+        <shape android:shape="rectangle">
+            <gradient
+                android:type="linear"
+                android:angle="115"
+                android:startColor="@color/glass_sheen_white"
+                android:centerColor="@color/glass_sheen_soft"
+                android:endColor="#00000000"/>
+            <corners android:radius="12dp"/>
+        </shape>
+    </item>
+    <!-- Very thin glass edge -->
+    <item>
+        <shape android:shape="rectangle">
+            <stroke android:width="0.4dp" android:color="@color/glass_stroke_soft"/>
+            <corners android:radius="12dp"/>
+        </shape>
+    </item>
+</layer-list>
