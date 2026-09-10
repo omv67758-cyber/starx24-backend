@@ -60,4 +60,4 @@ public class Banner implements Serializable {
     public String getImageUrl() { return imageUrl; }
     public int getDisplayOrder() { return displayOrder; }
     public boolean isActive() { return active; }
-      }
+}
