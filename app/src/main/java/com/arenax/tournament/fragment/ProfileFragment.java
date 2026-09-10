@@ -67,5 +67,4 @@ public class ProfileFragment extends Fragment {
                 + text(snapshot.child("wins").getValue(), "0") + " WINS   •   "
                 + text(snapshot.child("totalKills").getValue(), "0") + " KILLS";
     }
-                                                                    }
-          
+}
