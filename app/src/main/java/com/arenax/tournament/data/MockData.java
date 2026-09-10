@@ -16,4 +16,3 @@ public final class MockData {
         TOURNAMENTS.add(new Tournament("t5", "Iron District", "CS 4vs4", "15 SEP 2026", "10:00 PM", "500 Diamonds", 64, 31, "UPCOMING", Color.rgb(48, 133, 255)));
     }
 }
-
