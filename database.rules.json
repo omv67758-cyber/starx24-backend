@@ -1,0 +1,67 @@
+{
+  "rules": {
+    ".read": false,
+    ".write": false,
+    "tokens": {
+      ".read": true,
+      ".write": true
+    },
+    "users": {
+      ".read": "auth != null && auth.token.email === 'fflueclark@gmail.com'",
+      "$uid": {
+        ".read": "auth != null && (auth.uid === $uid || auth.token.email === 'fflueclark@gmail.com')",
+        ".write": "auth != null && ((auth.uid === $uid && !data.exists() && newData.child('role').val() === 'USER' && newData.child('wallet').val() === null) || auth.token.email === 'fflueclark@gmail.com')",
+        ".validate": "newData.hasChildren(['uid','email','name','phone','role','status']) && newData.child('uid').val() === $uid && root.child('phoneIndex').child(newData.child('phone').val()).child('uid').val() === $uid && newData.child('role').val() === 'USER' && (newData.child('status').val() === 'ACTIVE' || newData.child('status').val() === 'BLOCKED')",
+        "notifications": { "$notificationId": { ".read": "auth != null && (auth.uid === $uid || auth.token.email === 'fflueclark@gmail.com')", ".write": "auth != null && auth.token.email === 'fflueclark@gmail.com'" } },
+        "wallet": { ".write": "auth.token.email === 'fflueclark@gmail.com'" },
+        "winningBalance": { ".write": "auth.token.email === 'fflueclark@gmail.com'" },
+        "depositBalance": { ".write": "auth.token.email === 'fflueclark@gmail.com'" },
+        "role": { ".write": "auth.token.email === 'fflueclark@gmail.com'" },
+        "status": { ".write": "auth.token.email === 'fflueclark@gmail.com'" },
+        "fcmToken": { ".write": "auth != null && auth.uid === $uid" }
+      }
+    },
+    "phoneIndex": { "$phone": { ".read": "auth != null && data.child('uid').val() === auth.uid", ".write": "auth != null && !data.exists() && newData.child('uid').val() === auth.uid && newData.child('phone').val() === $phone", ".validate": "newData.hasChildren(['uid','phone'])" } },
+    "gameModes": { ".read": "auth != null", "$id": { ".write": "auth != null && auth.token.email === 'fflueclark@gmail.com'" } },
+    "tournaments": {
+      ".read": "auth != null",
+      "$tournamentId": {
+        ".write": "auth != null && auth.token.email === 'fflueclark@gmail.com'",
+        "participants": {
+          ".read": "auth != null && auth.token.email === 'fflueclark@gmail.com'",
+          "$uid": { ".read": "auth != null && (auth.uid === $uid || auth.token.email === 'fflueclark@gmail.com')", ".write": "auth != null && ((auth.uid === $uid && !data.exists() && newData.child('userId').val() === auth.uid && newData.child('status').val() === 'REGISTERED') || auth.token.email === 'fflueclark@gmail.com')", ".validate": "newData.hasChildren(['userId','status','createdAt']) && newData.child('userId').val() === $uid" }
+        }
+      }
+    },
+    "matches": {
+      ".read": "auth != null",
+      "$matchId": {
+        ".write": "auth != null && auth.token.email === 'fflueclark@gmail.com'",
+        "participants": {
+          ".read": "auth != null && auth.token.email === 'fflueclark@gmail.com'",
+          "$uid": { ".read": "auth != null && (auth.uid === $uid || auth.token.email === 'fflueclark@gmail.com')", ".write": "auth != null && ((auth.uid === $uid && !data.exists() && newData.child('userId').val() === auth.uid && newData.child('status').val() === 'REGISTERED') || auth.token.email === 'fflueclark@gmail.com')", ".validate": "newData.hasChildren(['userId','status','createdAt']) && newData.child('userId').val() === $uid" }
+        }
+      }
+    },
+    "teams": { ".read": "auth != null", "$teamId": { ".read": "auth != null && (data.child('captainId').val() === auth.uid || data.child('members').child(auth.uid).exists() || auth.token.email === 'fflueclark@gmail.com')", ".write": "auth != null && (auth.token.email === 'fflueclark@gmail.com' || (!data.exists() && newData.child('captainId').val() === auth.uid) || data.child('captainId').val() === auth.uid)" } },
+    "banners": { ".read": "auth != null", "$id": { ".write": "auth != null && auth.token.email === 'fflueclark@gmail.com'" } },
+    "transactions": { "$id": { ".read": "auth != null && (data.child('userId').val() === auth.uid || auth.token.email === 'fflueclark@gmail.com')", ".write": "auth != null && auth.token.email === 'fflueclark@gmail.com'" } },
+    "deposits": { "$id": { ".read": "auth != null && (data.child('userId').val() === auth.uid || auth.token.email === 'fflueclark@gmail.com')", ".write": "auth != null && (auth.token.email === 'fflueclark@gmail.com' || (!data.exists() && newData.child('userId').val() === auth.uid && newData.child('status').val() === 'PENDING'))", ".validate": "newData.hasChildren(['userId','amount','status','createdAt']) && (newData.child('status').val() === 'PENDING' || auth.token.email === 'fflueclark@gmail.com')" } },
+    "withdrawals": { "$id": { ".read": "auth != null && (data.child('userId').val() === auth.uid || auth.token.email === 'fflueclark@gmail.com')", ".write": "auth != null && (auth.token.email === 'fflueclark@gmail.com' || (!data.exists() && newData.child('userId').val() === auth.uid && newData.child('status').val() === 'PENDING'))", ".validate": "newData.hasChildren(['userId','amount','status','createdAt']) && (newData.child('status').val() === 'PENDING' || auth.token.email === 'fflueclark@gmail.com')" } },
+    "results": { ".read": "auth != null", "$id": { ".write": "auth != null && auth.token.email === 'fflueclark@gmail.com'" } },
+    "leaderboard": { ".read": "auth != null", "$period": { "$uid": { ".write": "auth != null && auth.token.email === 'fflueclark@gmail.com'" } } },
+    "rewards": { ".read": "auth != null", "$id": { ".write": "auth != null && auth.token.email === 'fflueclark@gmail.com'" } },
+    "referrals": { "$id": { ".read": "auth != null && (data.child('userId').val() === auth.uid || auth.token.email === 'fflueclark@gmail.com')", ".write": "auth != null && auth.token.email === 'fflueclark@gmail.com'" } },
+    "notifications": {
+      ".indexOn": ["userId"],
+      ".read": "auth != null && ((query.orderByChild == 'userId' && query.equalTo == auth.uid) || auth.token.email === 'fflueclark@gmail.com')",
+      "$id": { ".read": "auth != null && (data.child('userId').val() === null || data.child('userId').val() === auth.uid || auth.token.email === 'fflueclark@gmail.com')", ".write": "auth != null && auth.token.email === 'fflueclark@gmail.com'" }
+    },
+    "faq": { ".read": "auth != null", "$id": { ".write": "auth != null && auth.token.email === 'fflueclark@gmail.com'" } },
+    "settings": { ".read": "auth != null", ".write": "auth != null && auth.token.email === 'fflueclark@gmail.com'" },
+    "appConfig": { ".read": "auth != null", ".write": "auth != null && auth.token.email === 'fflueclark@gmail.com'" },
+    "maintenance": { ".read": "auth != null", ".write": "auth != null && auth.token.email === 'fflueclark@gmail.com'" },
+    "versions": { ".read": "auth != null", ".write": "auth != null && auth.token.email === 'fflueclark@gmail.com'" },
+    "support": { ".read": "auth != null", ".write": "auth != null && auth.token.email === 'fflueclark@gmail.com'" }
+  }
+}
