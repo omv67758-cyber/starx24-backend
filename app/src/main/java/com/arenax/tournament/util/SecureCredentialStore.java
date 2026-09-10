@@ -73,5 +73,4 @@ public final class SecureCredentialStore {
                 .build());
         return generator.generateKey();
     }
-            }
-  
+}
