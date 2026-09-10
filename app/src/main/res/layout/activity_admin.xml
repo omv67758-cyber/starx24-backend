@@ -1,0 +1,157 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@color/ink"
+    android:orientation="horizontal">
+
+    <LinearLayout
+        android:layout_width="104dp"
+        android:layout_height="match_parent"
+        android:background="@drawable/bg_screen"
+        android:orientation="vertical"
+        android:paddingTop="8dp"
+        android:paddingBottom="8dp">
+        <TextView
+            android:id="@+id/admin_back"
+            android:layout_width="match_parent"
+            android:layout_height="42dp"
+            android:gravity="center"
+            android:text="☰"
+            android:textColor="@color/text_primary"
+            android:textSize="20sp"
+            android:textStyle="bold" />
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="52dp"
+            android:gravity="center"
+            android:text="Admin\nCONSOLE"
+            android:textColor="@color/text_primary"
+            android:textSize="10sp"
+            android:textStyle="bold" />
+        <View android:layout_width="match_parent" android:layout_height="1dp" android:background="@color/stroke" />
+        <ScrollView android:layout_width="match_parent" android:layout_height="0dp" android:layout_weight="1" android:scrollbars="none">
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical">
+        <TextView android:id="@+id/admin_nav_dashboard" style="@style/AdminNavItem" android:text="⌂  Dashboard" />
+        <TextView android:id="@+id/admin_nav_users" style="@style/AdminNavItem" android:visibility="gone" android:text="●  Users" />
+        <TextView android:id="@+id/admin_nav_battles" style="@style/AdminNavItem" android:visibility="gone" android:text="⚔  Battles" />
+        <TextView android:id="@+id/admin_nav_tournaments" style="@style/AdminNavItem" android:text="♛  Tournaments" />
+        <TextView android:id="@+id/admin_nav_esports" style="@style/AdminNavItem" android:visibility="gone" android:text="⌘  Esports" />
+        <TextView android:id="@+id/admin_nav_category" style="@style/AdminNavItem" android:visibility="gone" android:text="♨  Category" />
+        <TextView android:id="@+id/admin_nav_teams" style="@style/AdminNavItem" android:visibility="gone" android:text="♞  Teams" />
+        <TextView android:id="@+id/admin_nav_matches" style="@style/AdminNavItem" android:text="⏱  Matches" />
+        <TextView android:id="@+id/admin_nav_results" style="@style/AdminNavItem" android:visibility="gone" android:text="⚑  Results" />
+        <TextView android:id="@+id/admin_nav_disputes" style="@style/AdminNavItem" android:visibility="gone" android:text="⚠  Disputes" />
+        <TextView android:id="@+id/admin_nav_reports" style="@style/AdminNavItem" android:visibility="gone" android:text="⛔  Reports" />
+        <TextView android:id="@+id/admin_nav_faq" style="@style/AdminNavItem" android:visibility="gone" android:text="❓  FAQ" />
+        <TextView android:id="@+id/admin_nav_notice" style="@style/AdminNavItem" android:visibility="gone" android:text="◈  Notice" />
+        <TextView android:id="@+id/admin_nav_analytics" style="@style/AdminNavItem" android:visibility="gone" android:text="▥  Analytics" />
+        <TextView android:id="@+id/admin_nav_activity" style="@style/AdminNavItem" android:visibility="gone" android:text="▤  Activity Log" />
+        <TextView android:id="@+id/admin_nav_settings" style="@style/AdminNavItem" android:visibility="gone" android:text="⚙  Settings" />
+        <TextView android:id="@+id/admin_nav_roles" style="@style/AdminNavItem" android:visibility="gone" android:text="🛡  Roles &amp; Permissions" />
+        </LinearLayout>
+        </ScrollView>
+        <TextView android:layout_width="match_parent" android:layout_height="34dp" android:gravity="center" android:text="GAMING • ESPORTS" android:textColor="@color/text_muted" android:textSize="9sp" />
+    </LinearLayout>
+
+    <FrameLayout
+        android:layout_width="0dp"
+        android:layout_height="match_parent"
+        android:layout_weight="1"
+        android:background="@color/ink">
+        <LinearLayout android:layout_width="match_parent" android:layout_height="match_parent" android:orientation="vertical">
+            <LinearLayout android:layout_width="match_parent" android:layout_height="62dp" android:gravity="center_vertical" android:paddingStart="18dp" android:paddingEnd="18dp">
+                <LinearLayout android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:orientation="vertical">
+                    <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="CONTROL • MONITOR • MANAGE" android:textColor="@color/blood_red" android:textSize="9sp" android:textStyle="bold" android:letterSpacing="0.16" />
+                    <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Admin Console" android:textColor="@color/text_primary" android:textSize="8sp" android:textStyle="bold" />
+                </LinearLayout>
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/admin_global_search"
+                    android:layout_width="wrap_content"
+                    android:layout_height="42dp"
+                    android:layout_marginEnd="8dp"
+                    android:text="SEARCH"
+                    android:textColor="@color/accent_blue"
+                    android:textSize="8sp"
+                    android:textStyle="bold"
+                    app:backgroundTint="@color/accent_blue_tint"
+                    app:strokeColor="@color/accent_blue_stroke"
+                    app:strokeWidth="1dp"
+                    app:cornerRadius="14dp"
+                    app:rippleColor="@color/accent_blue_stroke" />
+                <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:background="@drawable/bg_pill" android:paddingStart="12dp" android:paddingTop="7dp" android:paddingEnd="12dp" android:paddingBottom="7dp" android:text="ADMIN" android:textColor="#FFFFA0A8" android:textSize="8sp" android:textStyle="bold" />
+            </LinearLayout>
+            <FrameLayout android:layout_width="match_parent" android:layout_height="0dp" android:layout_weight="1">
+                <ScrollView android:id="@+id/admin_dashboard_scroll" android:layout_width="match_parent" android:layout_height="match_parent" android:fillViewport="true">
+                    <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:paddingStart="18dp" android:paddingEnd="18dp" android:paddingBottom="24dp">
+                        <!-- Welcome hero -->
+                        <LinearLayout android:layout_width="match_parent" android:layout_height="108dp" android:background="@drawable/bg_card_red" android:orientation="vertical" android:padding="18dp">
+                            <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="WELCOME BACK" android:textColor="@color/blood_red" android:textSize="11sp" android:textStyle="bold" />
+                            <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginTop="4dp" android:text="ADMIN" android:textColor="@color/text_primary" android:textSize="20sp" android:textStyle="bold" />
+                            <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Create. Organize. Manage." android:textColor="@color/text_secondary" android:textSize="11sp" />
+                        </LinearLayout>
+
+                        <!-- Stat row: icon-topped cards, single glance overview -->
+                        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="14dp" android:orientation="horizontal">
+                            <LinearLayout android:layout_width="0dp" android:layout_height="wrap_content" android:layout_marginEnd="5dp" android:layout_weight="1" android:background="@drawable/bg_card_purple" android:gravity="center" android:orientation="vertical" android:paddingTop="14dp" android:paddingBottom="14dp">
+                                <ImageView android:layout_width="20dp" android:layout_height="20dp" android:src="@drawable/ic_profile" app:tint="@color/accent_purple" android:contentDescription="@string/app_name"/>
+                                <TextView android:id="@+id/admin_stat_users" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginTop="6dp" android:gravity="center" android:text="0\nUSERS" android:textColor="@color/accent_purple" android:textSize="8sp" android:textStyle="bold" />
+                            </LinearLayout>
+                            <LinearLayout android:layout_width="0dp" android:layout_height="wrap_content" android:layout_marginStart="5dp" android:layout_marginEnd="5dp" android:layout_weight="1" android:background="@drawable/bg_card_blue" android:gravity="center" android:orientation="vertical" android:paddingTop="14dp" android:paddingBottom="14dp">
+                                <ImageView android:layout_width="20dp" android:layout_height="20dp" android:src="@drawable/ic_bolt" app:tint="@color/accent_blue" android:contentDescription="@string/app_name"/>
+                                <TextView android:id="@+id/admin_stat_battles" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginTop="6dp" android:gravity="center" android:text="0\nBATTLES" android:textColor="@color/accent_blue" android:textSize="8sp" android:textStyle="bold" />
+                            </LinearLayout>
+                            <LinearLayout android:layout_width="0dp" android:layout_height="wrap_content" android:layout_marginStart="5dp" android:layout_weight="1" android:background="@drawable/bg_card_green" android:gravity="center" android:orientation="vertical" android:paddingTop="14dp" android:paddingBottom="14dp">
+                                <ImageView android:layout_width="20dp" android:layout_height="20dp" android:src="@drawable/ic_rewards" app:tint="@color/accent_green" android:contentDescription="@string/app_name"/>
+                                <TextView android:id="@+id/admin_stat_prize" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginTop="6dp" android:gravity="center" android:text="FREE\nENTRY" android:textColor="@color/accent_green" android:textSize="8sp" android:textStyle="bold" />
+                            </LinearLayout>
+                        </LinearLayout>
+
+                        <!-- Quick actions -->
+                        <LinearLayout android:layout_width="match_parent" android:layout_height="46dp" android:layout_marginTop="14dp" android:orientation="horizontal">
+                            <com.google.android.material.button.MaterialButton android:id="@+id/admin_add_tournament" android:layout_width="0dp" android:layout_height="match_parent" android:layout_marginEnd="5dp" android:layout_weight="1" android:text="＋ NEW BATTLE" android:textColor="@color/accent_purple" android:textSize="8sp" android:textStyle="bold" app:backgroundTint="@color/accent_purple_tint" app:strokeColor="@color/accent_purple_stroke" app:strokeWidth="1dp" app:cornerRadius="16dp" app:rippleColor="@color/accent_purple_stroke" />
+                            <com.google.android.material.button.MaterialButton android:id="@+id/admin_send_notice" android:layout_width="0dp" android:layout_height="match_parent" android:layout_marginStart="5dp" android:layout_weight="1" android:text="SEND NOTICE" android:textColor="@color/accent_blue" android:textSize="8sp" android:textStyle="bold" app:backgroundTint="@color/accent_blue_tint" app:strokeColor="@color/accent_blue_stroke" app:strokeWidth="1dp" app:cornerRadius="16dp" app:rippleColor="@color/accent_blue_stroke" />
+                        </LinearLayout>
+
+                        <!-- Esports categories -->
+                        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="24dp" android:gravity="center_vertical" android:orientation="horizontal">
+                            <TextView android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:text="ESPORTS CATEGORIES" android:textColor="@color/text_primary" android:textSize="12sp" android:textStyle="bold" android:letterSpacing="0.03"/>
+                            <com.google.android.material.button.MaterialButton android:id="@+id/admin_add_category" android:layout_width="wrap_content" android:layout_height="34dp" android:minWidth="0dp" android:paddingStart="12dp" android:paddingEnd="12dp" android:text="＋ ADD" android:textColor="@color/accent_green" android:textSize="8sp" android:textStyle="bold" app:backgroundTint="@color/accent_green_tint" app:strokeColor="@color/accent_green_stroke" app:strokeWidth="1dp" app:cornerRadius="14dp" app:rippleColor="@color/accent_green_stroke" />
+                        </LinearLayout>
+                        <androidx.recyclerview.widget.RecyclerView android:id="@+id/admin_game_mode_list" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="10dp" android:nestedScrollingEnabled="false" />
+
+                        <!-- Home banners -->
+                        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="24dp" android:gravity="center_vertical" android:orientation="horizontal">
+                            <TextView android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:text="HOME BANNERS" android:textColor="@color/text_primary" android:textSize="12sp" android:textStyle="bold" android:letterSpacing="0.03"/>
+                            <com.google.android.material.button.MaterialButton android:id="@+id/admin_add_banner" android:layout_width="wrap_content" android:layout_height="34dp" android:minWidth="0dp" android:paddingStart="12dp" android:paddingEnd="12dp" android:text="＋ ADD" android:textColor="@color/accent_yellow" android:textSize="8sp" android:textStyle="bold" app:backgroundTint="@color/accent_yellow_tint" app:strokeColor="@color/accent_yellow_stroke" app:strokeWidth="1dp" app:cornerRadius="14dp" app:rippleColor="@color/accent_yellow_stroke" />
+                        </LinearLayout>
+                        <androidx.recyclerview.widget.RecyclerView android:id="@+id/admin_banner_list" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="10dp" android:nestedScrollingEnabled="false" />
+
+                        <!-- Notice + maintenance, combined into one compact settings card -->
+                        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginTop="24dp" android:text="PLATFORM CONTROLS" android:textColor="@color/text_primary" android:textSize="12sp" android:textStyle="bold" android:letterSpacing="0.03"/>
+                        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="10dp" android:background="@drawable/bg_card" android:orientation="vertical" android:padding="16dp">
+                            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:gravity="center_vertical" android:orientation="horizontal">
+                                <TextView android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:text="Home notice strip" android:textColor="@color/text_primary" android:textSize="11sp" android:textStyle="bold" />
+                                <com.google.android.material.switchmaterial.SwitchMaterial android:id="@+id/admin_home_notice_switch" android:layout_width="wrap_content" android:layout_height="wrap_content" app:thumbTint="@color/text_primary" app:trackTint="@color/blood_red" />
+                            </LinearLayout>
+                            <EditText android:id="@+id/admin_home_notice_title_input" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="10dp" android:background="@drawable/bg_input" android:hint="Notice headline (bold title on detail page)" android:padding="14dp" android:textColor="@color/text_primary" android:textColorHint="@color/text_secondary" android:textSize="12sp" android:maxLines="1" />
+                            <EditText android:id="@+id/admin_home_notice_input" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="10dp" android:background="@drawable/bg_input" android:hint="Notice text" android:padding="14dp" android:textColor="@color/text_primary" android:textColorHint="@color/text_secondary" android:textSize="12sp" android:maxLines="2" />
+                            <com.google.android.material.button.MaterialButton android:id="@+id/admin_home_notice_publish" android:layout_width="match_parent" android:layout_height="42dp" android:layout_marginTop="10dp" android:text="PUBLISH NOTICE" android:textColor="@color/accent_blue" android:textSize="10sp" android:textStyle="bold" app:backgroundTint="@color/accent_blue_tint" app:strokeColor="@color/accent_blue_stroke" app:strokeWidth="1dp" app:cornerRadius="14dp" app:rippleColor="@color/accent_blue_stroke" />
+                            <View android:layout_width="match_parent" android:layout_height="1dp" android:layout_marginTop="16dp" android:layout_marginBottom="12dp" android:background="@color/stroke" />
+                            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:gravity="center_vertical" android:orientation="horizontal">
+                                <TextView android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:text="Maintenance mode" android:textColor="@color/text_primary" android:textSize="11sp" android:textStyle="bold" />
+                                <com.google.android.material.switchmaterial.SwitchMaterial android:id="@+id/admin_maintenance" android:layout_width="wrap_content" android:layout_height="wrap_content" app:thumbTint="@color/text_primary" app:trackTint="@color/blood_red" />
+                            </LinearLayout>
+                        </LinearLayout>
+
+                        <!-- Tournaments -->
+                        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginTop="24dp" android:text="TOURNAMENTS" android:textColor="@color/text_primary" android:textSize="12sp" android:textStyle="bold" android:letterSpacing="0.03"/>
+                        <androidx.recyclerview.widget.RecyclerView android:id="@+id/admin_tournament_list" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="10dp" android:nestedScrollingEnabled="false" />
+                    </LinearLayout>
+                </ScrollView>
+                <ScrollView android:id="@+id/admin_workspace_scroll" android:layout_width="match_parent" android:layout_height="match_parent" android:fillViewport="true" android:visibility="gone"><LinearLayout android:id="@+id/admin_workspace_content" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:padding="18dp" /></ScrollView>
+            </FrameLayout>
+        </LinearLayout>
+    </FrameLayout>
+</LinearLayout>
