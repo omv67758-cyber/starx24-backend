@@ -1,0 +1,7 @@
+<resources xmlns:android="http://schemas.android.com/apk/res/android">
+    <color name="nav_item_active">#FFFFFFFF</color>
+    <color name="nav_item_inactive">#FFFFFFFF</color>
+    <style name="ArenaXActiveIndicator" parent="Widget.Material3.BottomNavigationView.ActiveIndicator">
+        <item name="android:color">#35FFFFFF</item>
+    </style>
+</resources>
