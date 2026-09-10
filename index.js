@@ -101,10 +101,18 @@ app.post("/createOrder", async (req, res) => {
 // ---------------------------------------------------------------
 // 2. WEBHOOK
 // ---------------------------------------------------------------
+// ZapUPI dashboard's "Test" button may ping with GET — respond OK so the
+// dashboard test passes.
+app.get("/zapupiWebhook", (req, res) => res.status(200).send("ok - webhook endpoint reachable"));
+
 app.post("/zapupiWebhook", async (req, res) => {
   try {
     const orderId = req.body.order_id || req.body.data?.order_id;
-    if (!orderId) return res.status(400).send("missing order_id");
+    // ZapUPI's dashboard "Test" button pings this URL without a real
+    // order_id just to check for an HTTP 200 — respond OK instead of
+    // erroring, so the dashboard test passes. Only real webhook calls
+    // (which always include order_id) go through the logic below.
+    if (!orderId) return res.status(200).send("ok - no order_id (test ping)");
 
     const orderSnap = await db.ref(`orders/${orderId}`).once("value");
     const order = orderSnap.val();
