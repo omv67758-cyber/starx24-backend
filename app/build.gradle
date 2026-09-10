@@ -98,4 +98,3 @@ dependencies {
     // using assets/service-account.json — see AccessTokenProvider's security warning.
     implementation 'com.squareup.okhttp3:okhttp:4.12.0'
 }
-
