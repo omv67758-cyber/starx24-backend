@@ -127,7 +127,10 @@
     },
     "deposits": {
       ".read": "auth != null && (auth.token.email === 'fflueclark@gmail.com' || root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()).child('role').val() === 'MASTER_ADMIN' || root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()).child('role').val() === 'PAYMENT_ADMIN')",
-      ".write": "auth != null && (auth.token.email === 'fflueclark@gmail.com' || root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()).child('role').val() === 'MASTER_ADMIN' || root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()).child('role').val() === 'PAYMENT_ADMIN')"
+      ".write": "auth != null && (auth.token.email === 'fflueclark@gmail.com' || root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()).child('role').val() === 'MASTER_ADMIN' || root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()).child('role').val() === 'PAYMENT_ADMIN')",
+      "$id": {
+        ".validate": "newData.hasChildren(['uid','amount','status']) && newData.child('amount').isNumber() && newData.child('amount').val() > 0 && (newData.child('status').val() === 'pending' || newData.child('status').val() === 'approved' || newData.child('status').val() === 'rejected')"
+      }
     },
     "transactions": {
       ".read": "auth != null && (auth.token.email === 'fflueclark@gmail.com' || root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()).child('role').val() === 'MASTER_ADMIN' || root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()).child('role').val() === 'PAYMENT_ADMIN')",
