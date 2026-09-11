@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Quick-amount chips: flat, pure-red, half-transparent fills only. No gradients. -->
+<selector xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Selected amount: brighter flat translucent red + brighter border -->
+    <item android:state_selected="true">
+        <ripple android:color="@color/ripple_light">
+            <item>
+                <shape android:shape="rectangle">
+                    <solid android:color="@color/wallet_flat_red" />
+                    <corners android:radius="8dp" />
+                    <stroke android:width="1.5dp" android:color="@color/wallet_flat_red_border" />
+                </shape>
+            </item>
+        </ripple>
+    </item>
+    <!-- Default: dim flat translucent red, same family, no gradient -->
+    <item>
+        <ripple android:color="@color/ripple_blood">
+            <item>
+                <shape android:shape="rectangle">
+                    <solid android:color="@color/wallet_flat_red_faint" />
+                    <corners android:radius="8dp" />
+                    <stroke android:width="1dp" android:color="@color/wallet_stroke_red_strong" />
+                </shape>
+            </item>
+        </ripple>
+    </item>
+</selector>
