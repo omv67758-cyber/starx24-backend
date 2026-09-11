@@ -220,7 +220,56 @@ async function creditWalletOnce(order) {
     return wallet;
   });
 
+  if (result.committed) {
+    // Record a DEPOSIT entry so the app's Wallet history list (which reads
+    // users/<uid>/wallet/transactions) shows this top-up, matching the
+    // Transaction model's fields (type/title/amount/timestamp/status).
+    await db.ref(`users/${order.uid}/wallet/transactions`).push({
+      type: "DEPOSIT",
+      title: "Wallet Top-up",
+      amount: Number(order.amount),
+      timestamp: admin.database.ServerValue.TIMESTAMP,
+      status: "SUCCESS",
+    });
+  }
+
   return result.committed;
+}
+
+/**
+ * Shared settlement logic used by BOTH the ZapUPI webhook and the app's
+ * manual /verifyOrder call. Re-checks the real status with ZapUPI itself
+ * (never trusts the caller), credits the wallet at most once, and returns
+ * the final order status. Safe to call multiple times for the same order.
+ */
+async function settleOrder(orderId, storedOrder) {
+  if (storedOrder.status === "credited") return "credited";
+  if (storedOrder.status === "failed") return "failed";
+
+  const statusData = await getVerifiedOrderStatus(orderId);
+  const verifiedStatus = String(statusData?.status || statusData?.data?.status || "").trim().toLowerCase();
+
+  if (verifiedStatus === "success") {
+    const order = { ...storedOrder, orderId };
+    await db.ref(`orders/${orderId}/status`).transaction((current) => {
+      if (current === "pending" || current === "processing") return "processing";
+      return;
+    });
+
+    await creditWalletOnce(order);
+    await db.ref(`orders/${orderId}`).update({
+      status: "credited",
+      creditedAt: admin.database.ServerValue.TIMESTAMP,
+    });
+    return "credited";
+  }
+
+  if (verifiedStatus === "failed") {
+    await db.ref(`orders/${orderId}/status`).set("failed");
+    return "failed";
+  }
+
+  return "pending";
 }
 
 app.post("/zapupiWebhook", async (req, res) => {
@@ -236,29 +285,8 @@ app.post("/zapupiWebhook", async (req, res) => {
     // Ignore unknown provider probes without creating a retry storm. Real
     // orders are always created in Firebase before ZapUPI is called.
     if (!storedOrder) return res.status(200).send("ok");
-    if (storedOrder.status === "credited" || storedOrder.status === "failed") {
-      return res.status(200).send("already processed");
-    }
 
-    const statusData = await getVerifiedOrderStatus(orderId);
-    const verifiedStatus = String(statusData?.status || statusData?.data?.status || "").trim().toLowerCase();
-
-    if (verifiedStatus === "success") {
-      const order = { ...storedOrder, orderId };
-      await db.ref(`orders/${orderId}/status`).transaction((current) => {
-        if (current === "pending" || current === "processing") return "processing";
-        return;
-      });
-
-      await creditWalletOnce(order);
-      await db.ref(`orders/${orderId}`).update({
-        status: "credited",
-        creditedAt: admin.database.ServerValue.TIMESTAMP,
-      });
-    } else if (verifiedStatus === "failed") {
-      await db.ref(`orders/${orderId}/status`).set("failed");
-    }
-
+    await settleOrder(orderId, storedOrder);
     return res.status(200).send("ok");
   } catch (error) {
     console.error("webhook error", error.message);
@@ -266,6 +294,39 @@ app.post("/zapupiWebhook", async (req, res) => {
     // have already logged. The order remains non-credited and can be retried
     // from the provider dashboard.
     return res.status(200).send("logged");
+  }
+});
+
+// Called by the app itself the moment the user returns from the payment page
+// (Custom Tab closed / app resumed). This is a same-second fallback so coins
+// land immediately instead of waiting on ZapUPI's webhook delivery, which can
+// be slow or, on a sleeping free-tier Render instance, missed entirely.
+app.post("/verifyOrder", async (req, res) => {
+  const idToken = getBearerToken(req);
+  if (!idToken) return res.status(401).json({ error: "Missing Firebase authorization token" });
+
+  let decoded;
+  try {
+    decoded = await admin.auth().verifyIdToken(idToken);
+  } catch (_error) {
+    return res.status(401).json({ error: "Invalid Firebase authorization token" });
+  }
+
+  const orderId = String(req.body?.order_id || "").trim();
+  if (!validOrderId(orderId)) return res.status(400).json({ error: "Invalid order id" });
+
+  try {
+    const orderSnapshot = await db.ref(`orders/${orderId}`).once("value");
+    const storedOrder = orderSnapshot.val();
+    if (!storedOrder) return res.status(404).json({ error: "Order not found" });
+    // Only the user who created the order can trigger a settlement check for it.
+    if (storedOrder.uid !== decoded.uid) return res.status(403).json({ error: "Order does not belong to this user" });
+
+    const status = await settleOrder(orderId, storedOrder);
+    return res.status(200).json({ status });
+  } catch (error) {
+    console.error("verifyOrder error", error.message);
+    return res.status(500).json({ error: "Could not verify order right now. Please try again." });
   }
 });
 
