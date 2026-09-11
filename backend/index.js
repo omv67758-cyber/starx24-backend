@@ -247,7 +247,15 @@ async function settleOrder(orderId, storedOrder) {
   if (storedOrder.status === "failed") return "failed";
 
   const statusData = await getVerifiedOrderStatus(orderId);
-  const verifiedStatus = String(statusData?.status || statusData?.data?.status || "").trim().toLowerCase();
+
+  // statusData.status only means "the API call itself succeeded" — it is
+  // NOT the payment result. The real payment status (Success/Failed/Pending)
+  // is nested under statusData.data.status. Only that nested field may ever
+  // be treated as a credit signal.
+  const apiCallOk = String(statusData?.status || "").trim().toLowerCase() === "success";
+  const verifiedStatus = apiCallOk
+    ? String(statusData?.data?.status || "").trim().toLowerCase()
+    : "";
 
   if (verifiedStatus === "success") {
     const order = { ...storedOrder, orderId };
