@@ -1,0 +1,9 @@
+{
+  "uid": "REPLACE_WITH_FIREBASE_AUTH_UID",
+  "email": "your-master@gmail.com",
+  "role": "MASTER_CONTROL",
+  "enabled": true,
+  "status": "ACTIVE",
+  "createdAt": { ".sv": "timestamp" },
+  "updatedAt": { ".sv": "timestamp" }
+}
