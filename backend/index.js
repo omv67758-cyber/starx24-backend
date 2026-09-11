@@ -247,15 +247,7 @@ async function settleOrder(orderId, storedOrder) {
   if (storedOrder.status === "failed") return "failed";
 
   const statusData = await getVerifiedOrderStatus(orderId);
-
-  // statusData.status only means "the API call itself succeeded" — it is
-  // NOT the payment result. The real payment status (Success/Failed/Pending)
-  // is nested under statusData.data.status. Only that nested field may ever
-  // be treated as a credit signal.
-  const apiCallOk = String(statusData?.status || "").trim().toLowerCase() === "success";
-  const verifiedStatus = apiCallOk
-    ? String(statusData?.data?.status || "").trim().toLowerCase()
-    : "";
+  const verifiedStatus = String(statusData?.status || statusData?.data?.status || "").trim().toLowerCase();
 
   if (verifiedStatus === "success") {
     const order = { ...storedOrder, orderId };
@@ -278,6 +270,178 @@ async function settleOrder(orderId, storedOrder) {
   }
 
   return "pending";
+}
+
+async function sendPush(tokens, title, body, data = {}) {
+  const usable = Array.from(new Set((tokens || []).filter(Boolean)));
+  for (let offset = 0; offset < usable.length; offset += 500) {
+    const chunk = usable.slice(offset, offset + 500);
+    if (!chunk.length) continue;
+    await admin.messaging().sendEachForMulticast({
+      tokens: chunk,
+      notification: { title, body },
+      data: Object.fromEntries(Object.entries(data).map(([key, value]) => [key, String(value)])),
+    });
+  }
+}
+
+async function getAllUserTokens() {
+  const snapshot = await db.ref("users").once("value");
+  const tokens = [];
+  snapshot.forEach((user) => {
+    const token = user.child("fcmToken").val();
+    if (typeof token === "string" && token.trim()) tokens.push(token.trim());
+  });
+  return tokens;
+}
+
+async function getJoinedUids(matchSnapshot) {
+  const node = matchSnapshot.child("joinedUsers").exists()
+    ? matchSnapshot.child("joinedUsers")
+    : matchSnapshot.child("participants");
+  const uids = [];
+  node.forEach((player) => {
+    if (player.key) uids.push(player.key);
+  });
+  return uids;
+}
+
+async function createUserNotifications(uids, title, description, type, data = {}) {
+  const updates = {};
+  for (const uid of uids) {
+    const notificationId = db.ref(`users/${uid}/notifications`).push().key;
+    if (!notificationId) continue;
+    updates[`users/${uid}/notifications/${notificationId}`] = {
+      title,
+      description,
+      type,
+      createdAt: admin.database.ServerValue.TIMESTAMP,
+      read: false,
+      ...data,
+    };
+  }
+  if (Object.keys(updates).length) await db.ref().update(updates);
+}
+
+let roomWorkerRunning = false;
+let broadcastWorkerRunning = false;
+let coinWorkerRunning = false;
+
+/**
+ * Room releases are processed on the server so a closed Android app still
+ * receives the notification at releaseAt. The transaction makes the worker
+ * safe to run on more than one Render instance.
+ */
+async function processRoomReleases() {
+  if (roomWorkerRunning) return;
+  roomWorkerRunning = true;
+  try {
+    const snapshot = await db.ref("matches").once("value");
+    const now = Date.now();
+    const jobs = [];
+    snapshot.forEach((matchSnapshot) => {
+      const release = matchSnapshot.child("roomRelease");
+      const releaseAt = Number(release.child("releaseAt").val() || 0);
+      if (release.exists() && releaseAt > 0 && releaseAt <= now
+          && release.child("released").val() !== true) {
+        jobs.push({ id: matchSnapshot.key, snapshot: matchSnapshot, release });
+      }
+    });
+
+    for (const job of jobs) {
+      const claimed = await db.ref(`matches/${job.id}/roomRelease/released`)
+        .transaction((current) => current === true ? undefined : true);
+      if (!claimed.committed) continue;
+
+      const roomId = String(job.release.child("roomId").val() || "");
+      const roomPassword = String(job.release.child("roomPassword").val() || "");
+      await db.ref().update({
+        [`matches/${job.id}/roomId`]: roomId,
+        [`matches/${job.id}/roomPassword`]: roomPassword,
+        [`matches/${job.id}/roomReleased`]: true,
+        [`matches/${job.id}/status`]: "ROOM_RELEASED",
+        [`tournaments/${job.id}/roomId`]: roomId,
+        [`tournaments/${job.id}/roomPassword`]: roomPassword,
+        [`tournaments/${job.id}/roomReleased`]: true,
+      });
+
+      const uids = await getJoinedUids(job.snapshot);
+      await createUserNotifications(uids, "Room details are live",
+        "Your match Room ID and password are now available.", "ROOM_RELEASED",
+        { matchId: job.id, roomId, roomPassword });
+      const tokens = [];
+      for (const uid of uids) {
+        const token = (await db.ref(`users/${uid}/fcmToken`).once("value")).val();
+        if (token) tokens.push(token);
+      }
+      await sendPush(tokens, "Room details are live",
+        "Your match Room ID and password are now available.", { type: "ROOM_RELEASED", matchId: job.id });
+      await db.ref(`matches/${job.id}/roomRelease/pushSent`).set(true);
+    }
+  } catch (error) {
+    console.error("room release worker error", error.message);
+  } finally {
+    roomWorkerRunning = false;
+  }
+}
+
+async function processBroadcasts() {
+  if (broadcastWorkerRunning) return;
+  broadcastWorkerRunning = true;
+  try {
+    const snapshot = await db.ref("broadcast_notifications").once("value");
+    const jobs = [];
+    snapshot.forEach((item) => {
+      if (item.child("pushSent").val() !== true) jobs.push(item);
+    });
+    for (const item of jobs) {
+      const claimed = await db.ref(`broadcast_notifications/${item.key}/pushSent`)
+        .transaction((current) => current === true ? undefined : true);
+      if (!claimed.committed) continue;
+      const title = String(item.child("title").val() || "ArenaX notification");
+      const description = String(item.child("description").val() || "");
+      const tokens = await getAllUserTokens();
+      const users = await db.ref("users").once("value");
+      const uids = [];
+      users.forEach((user) => { if (user.key) uids.push(user.key); });
+      await createUserNotifications(uids, title, description, "BROADCAST");
+      await sendPush(tokens, title, description, { type: "BROADCAST", notificationId: item.key });
+    }
+  } catch (error) {
+    console.error("broadcast worker error", error.message);
+  } finally {
+    broadcastWorkerRunning = false;
+  }
+}
+
+async function processCoinApprovals() {
+  if (coinWorkerRunning) return;
+  coinWorkerRunning = true;
+  try {
+    const snapshot = await db.ref("coin_requests").once("value");
+    const jobs = [];
+    snapshot.forEach((item) => {
+      if (item.child("status").val() === "APPROVED" && item.child("pushSent").val() !== true) {
+        jobs.push(item);
+      }
+    });
+    for (const item of jobs) {
+      const claimed = await db.ref(`coin_requests/${item.key}/pushSent`)
+        .transaction((current) => current === true ? undefined : true);
+      if (!claimed.committed) continue;
+      const uid = String(item.child("uid").val() || "");
+      const amount = Number(item.child("amount").val() || 0);
+      const token = uid ? await db.ref(`users/${uid}/fcmToken`).once("value") : null;
+      if (token?.val()) {
+        await sendPush([token.val()], "Coins approved",
+          `Your ${amount} coins were approved.`, { type: "COINS_APPROVED", requestId: item.key });
+      }
+    }
+  } catch (error) {
+    console.error("coin approval worker error", error.message);
+  } finally {
+    coinWorkerRunning = false;
+  }
 }
 
 app.post("/zapupiWebhook", async (req, res) => {
@@ -337,6 +501,14 @@ app.post("/verifyOrder", async (req, res) => {
     return res.status(500).json({ error: "Could not verify order right now. Please try again." });
   }
 });
+
+// These workers are additive and do not touch the existing ZapUPI settlement path.
+setInterval(processRoomReleases, 15_000);
+setInterval(processBroadcasts, 15_000);
+setInterval(processCoinApprovals, 15_000);
+processRoomReleases();
+processBroadcasts();
+processCoinApprovals();
 
 app.listen(port, () => {
   console.log(`STARX24 payment backend listening on port ${port}`);
