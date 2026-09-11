@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:layout_marginBottom="9dp"
+    android:background="@drawable/bg_leaderboard_cards"
+    android:gravity="center_vertical"
+    android:orientation="horizontal"
+    android:minHeight="64dp"
+    android:padding="10dp">
+    <TextView
+        android:id="@+id/leaderboard_rank"
+        android:layout_width="42dp"
+        android:layout_height="42dp"
+        android:background="@drawable/bg_leaderboard_rank"
+        android:gravity="center"
+        android:textColor="@color/home_text_dark"
+        android:textSize="14sp"
+        android:textStyle="bold" />
+    <TextView
+        android:id="@+id/leaderboard_avatar"
+        android:layout_width="40dp"
+        android:layout_height="40dp"
+        android:layout_marginStart="8dp"
+        android:background="@drawable/bg_avatar"
+        android:gravity="center"
+        android:text="P"
+        android:textColor="@color/text_primary"
+        android:textSize="13sp"
+        android:textStyle="bold" />
+    <LinearLayout
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="10dp"
+        android:layout_weight="1"
+        android:orientation="vertical">
+        <TextView android:id="@+id/leaderboard_name" android:layout_width="wrap_content" android:layout_height="wrap_content" android:textColor="@color/home_text_dark" android:textSize="14sp" android:textStyle="bold" />
+        <TextView android:id="@+id/leaderboard_stats" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginTop="3dp" android:textColor="@color/home_text_muted" android:textSize="11sp" />
+    </LinearLayout>
+    <TextView
+        android:id="@+id/leaderboard_winning"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:textColor="@color/home_text_dark"
+        android:textSize="14sp"
+        android:textStyle="bold" />
+</LinearLayout>

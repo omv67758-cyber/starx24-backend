@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 8pt spacing system -->
+    <dimen name="space_4">4dp</dimen>
+    <dimen name="space_8">8dp</dimen>
+    <dimen name="space_10">10dp</dimen>
+    <dimen name="space_12">12dp</dimen>
+    <dimen name="space_14">14dp</dimen>
+    <dimen name="space_16">16dp</dimen>
+    <dimen name="space_18">18dp</dimen>
+    <dimen name="space_20">20dp</dimen>
+    <dimen name="space_22">22dp</dimen>
+    <dimen name="space_24">24dp</dimen>
+    <dimen name="space_26">26dp</dimen>
+
+    <!-- Screen -->
+    <dimen name="wallet_screen_padding_h">18dp</dimen>
+    <dimen name="wallet_screen_padding_bottom">24dp</dimen>
+
+    <!-- Top bar -->
+    <dimen name="wallet_topbar_height">68dp</dimen>
+    <dimen name="wallet_topbar_radius">34dp</dimen>
+    <dimen name="wallet_topbar_icon">44dp</dimen>
+
+    <!-- Balance card -->
+    <dimen name="wallet_balance_card_height">190dp</dimen>
+    <dimen name="wallet_balance_card_radius">24dp</dimen>
+    <dimen name="wallet_balance_card_padding">20dp</dimen>
+    <dimen name="wallet_coin_icon">58dp</dimen>
+
+    <!-- Deposit / winning breakdown pill -->
+    <dimen name="wallet_pill_height">58dp</dimen>
+    <dimen name="wallet_pill_radius">29dp</dimen>
+
+    <!-- Amount buttons -->
+    <dimen name="wallet_amount_btn_height">50dp</dimen>
+    <dimen name="wallet_amount_btn_radius">16dp</dimen>
+    <dimen name="wallet_amount_btn_icon">26dp</dimen>
+    <dimen name="wallet_amount_btn_gap">10dp</dimen>
+
+    <!-- Custom amount input -->
+    <dimen name="wallet_input_height">58dp</dimen>
+    <dimen name="wallet_input_radius">16dp</dimen>
+    <dimen name="wallet_input_icon">28dp</dimen>
+
+    <!-- CTA buttons -->
+    <dimen name="wallet_cta_height">58dp</dimen>
+    <dimen name="wallet_cta_radius">18dp</dimen>
+    <dimen name="wallet_withdraw_height">56dp</dimen>
+    <dimen name="wallet_withdraw_icon">24dp</dimen>
+
+    <!-- Payment history -->
+    <dimen name="wallet_history_card_radius">22dp</dimen>
+    <dimen name="wallet_history_card_min_height">150dp</dimen>
+    <dimen name="wallet_history_empty_icon_box">54dp</dimen>
+    <dimen name="wallet_history_desc_max_width">280dp</dimen>
+    <dimen name="wallet_history_row_min_height">64dp</dimen>
+    <dimen name="wallet_history_row_icon">42dp</dimen>
+
+    <!-- Touch target minimum -->
+    <dimen name="wallet_min_touch_target">44dp</dimen>
+</resources>

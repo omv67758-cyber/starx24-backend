@@ -80,19 +80,41 @@ function getBearerToken(req) {
   return header.startsWith("Bearer ") ? header.slice(7).trim() : "";
 }
 
-async function requireMaster(req, res) {
+async function requireAdmin(req, res, allowedRoles = []) {
   const token = getBearerToken(req);
   if (!token) { res.status(401).json({ error: "Missing Firebase authorization token" }); return null; }
   try {
     const decoded = await admin.auth().verifyIdToken(token);
     const snap = await db.ref(`adminUsers/${decoded.uid}`).once("value");
     const account = snap.val();
-    const bootstrap = String(decoded.email || "").toLowerCase() === "fflueclark@gmail.com";
-    if (!String(decoded.email || "").toLowerCase().endsWith("@gmail.com") || (!bootstrap && (!account || account.enabled !== true || account.status !== "ACTIVE" || !["MASTER_CONTROL", "SUPER_ADMIN"].includes(account.role)))) {
-      res.status(403).json({ error: "Master Control permission required" }); return null;
+    const isBootstrapMaster = String(decoded.email || "").toLowerCase() === "fflueclark@gmail.com";
+    const role = String(account?.role || "");
+    const active = account?.enabled === true && account?.status === "ACTIVE";
+    const bootstrapAllowed = isBootstrapMaster && !account && allowedRoles.includes("MASTER_CONTROL");
+    if ((!active || (allowedRoles.length > 0 && !allowedRoles.includes(role))) && !bootstrapAllowed) {
+      res.status(403).json({ error: "Admin permission required" }); return null;
     }
-    return decoded;
+    return { decoded, account: account || { role: "MASTER_CONTROL" }, role: role || "MASTER_CONTROL" };
   } catch (_error) { res.status(401).json({ error: "Invalid Firebase authorization token" }); return null; }
+}
+
+async function requireMaster(req, res) {
+  const result = await requireAdmin(req, res, ["MASTER_CONTROL", "SUPER_ADMIN"]);
+  if (!result) return null;
+  const { decoded, account } = result;
+  const isBootstrapMaster = String(decoded.email || "").toLowerCase() === "fflueclark@gmail.com";
+  if (isBootstrapMaster && !account?.uid) {
+    await db.ref(`adminUsers/${decoded.uid}`).set({
+      uid: decoded.uid,
+      email: decoded.email,
+      role: "MASTER_CONTROL",
+      enabled: true,
+      status: "ACTIVE",
+      createdAt: admin.database.ServerValue.TIMESTAMP,
+      updatedAt: admin.database.ServerValue.TIMESTAMP,
+    });
+  }
+  return decoded;
 }
 
 app.post("/admin/provision", async (req, res) => {
@@ -102,7 +124,7 @@ app.post("/admin/provision", async (req, res) => {
   const email = String(req.body?.email || "").trim().toLowerCase();
   const displayName = String(req.body?.displayName || "").trim();
   if (!["PAYMENT_ADMIN", "MATCH_ADMIN"].includes(role)) return res.status(400).json({ error: "Role must be PAYMENT_ADMIN or MATCH_ADMIN" });
-  if (!/^[^\s@]+@[^\s@]+\.com$/.test(email)) return res.status(400).json({ error: "A valid email address is required" });
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email)) return res.status(400).json({ error: "A valid email address is required" });
   const temporaryPassword = `Sx${randomBytes(9).toString("base64url")}9!`;
   try {
     const user = await admin.auth().createUser({ email, password: temporaryPassword, displayName: displayName || undefined });
@@ -116,6 +138,52 @@ app.post("/admin/provision", async (req, res) => {
     if (error?.code === "auth/email-already-exists") return res.status(409).json({ error: "This email already has a Firebase account" });
     console.error("admin provision error", error.message);
     return res.status(500).json({ error: "Could not provision admin account" });
+  }
+});
+
+app.post("/admin/notifyParticipants", async (req, res) => {
+  const actor = await requireAdmin(req, res, ["MATCH_ADMIN", "MASTER_CONTROL", "SUPER_ADMIN"]);
+  if (!actor) return;
+
+  const targetType = String(req.body?.targetType || "").trim().toLowerCase();
+  const targetId = String(req.body?.targetId || "").trim();
+  const title = String(req.body?.title || "").trim().slice(0, 120);
+  const body = String(req.body?.body || "").trim().slice(0, 500);
+  if (!["tournament", "match"].includes(targetType) || !targetId || !title || !body) {
+    return res.status(400).json({ error: "targetType, targetId, title and body are required" });
+  }
+
+  try {
+    const participantsSnapshot = await db.ref(
+      `${targetType === "tournament" ? "tournaments" : "matches"}/${targetId}/participants`
+    ).once("value");
+    const participantIds = Object.keys(participantsSnapshot.val() || {});
+    if (participantIds.length === 0) return res.status(200).json({ sent: 0, failed: 0, total: 0 });
+
+    const tokenSnapshots = await Promise.all(
+      participantIds.map((uid) => db.ref(`users/${uid}/fcmToken`).once("value"))
+    );
+    const tokens = [...new Set(tokenSnapshots
+      .map((snapshot) => String(snapshot.val() || "").trim())
+      .filter(Boolean))];
+    if (tokens.length === 0) return res.status(200).json({ sent: 0, failed: 0, total: 0 });
+
+    let sent = 0;
+    let failed = 0;
+    for (let index = 0; index < tokens.length; index += 500) {
+      const batch = tokens.slice(index, index + 500);
+      const result = await admin.messaging().sendEachForMulticast({
+        tokens: batch,
+        notification: { title, body },
+        data: { targetType, targetId },
+      });
+      sent += result.successCount;
+      failed += result.failureCount;
+    }
+    return res.status(200).json({ sent, failed, total: tokens.length });
+  } catch (error) {
+    console.error("participant notification error", error.message);
+    return res.status(500).json({ error: "Could not send participant notifications" });
   }
 });
 

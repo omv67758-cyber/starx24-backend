@@ -59,4 +59,31 @@
     <color name="on_accent">#FFFFFFFF</color>
     <color name="icon_box_blue">#8B1624</color>
     <color name="icon_box_green">#1FAE6E</color>
+
+    <!-- ===== Wallet screen ===== -->
+    <color name="wallet_bg">#070507</color>
+    <color name="wallet_bg_deep">#0A0608</color>
+    <color name="wallet_card">#140B0E</color>
+    <color name="wallet_card_alt">#170B0F</color>
+    <color name="wallet_history_card">#10080B</color>
+    <color name="wallet_input_bg">#170A0D</color>
+    <color name="wallet_stroke_red_soft">#33E21E2B</color>
+    <color name="wallet_stroke_red_strong">#66E21E2B</color>
+    <color name="wallet_icon_circle_bg">#241119</color>
+    <color name="wallet_text_secondary">#D8D2D5</color>
+    <color name="wallet_text_muted">#8F858A</color>
+    <color name="wallet_text_faint">#777177</color>
+    <color name="wallet_history_desc">#817980</color>
+    <color name="wallet_divider">#241016</color>
+    <color name="wallet_credit">#2ECC8F</color>
+    <color name="wallet_debit">#E21E2B</color>
+    <color name="wallet_badge_pending">#F0B429</color>
+
+    <!-- Flat, pure-red half-transparent card fills (no gradients/streaks) -->
+    <color name="wallet_flat_red_faint">#4DE21E2B</color>
+    <color name="wallet_flat_red_soft">#66E21E2B</color>
+    <color name="wallet_flat_red">#99E21E2B</color>
+    <color name="wallet_flat_red_strong">#5CE21E2B</color>
+    <color name="wallet_flat_red_pill">#99E21E2B</color>
+    <color name="wallet_flat_red_border">#FF4757</color>
 </resources>

@@ -2,4 +2,40 @@
 <resources>
     <string name="app_name">STARX24</string>
     <string name="app_tagline">PLAY. COMPETE. CONQUER.</string>
+
+    <!-- Wallet -->
+    <string name="wallet_title">Wallet</string>
+    <string name="wallet_back_desc">Back</string>
+    <string name="wallet_coin_desc">Coin</string>
+    <string name="wallet_total_balance_label">TOTAL BALANCE</string>
+    <string name="wallet_deposit_balance_label">Deposit</string>
+    <string name="wallet_winning_balance_label">Winning</string>
+    <string name="wallet_add_money_title">Add Money</string>
+    <string name="wallet_amount_10">₹10</string>
+    <string name="wallet_amount_20">₹20</string>
+    <string name="wallet_amount_30">₹30</string>
+    <string name="wallet_amount_40">₹40</string>
+    <string name="wallet_amount_50">₹50</string>
+    <string name="wallet_amount_60">₹60</string>
+    <string name="wallet_amount_70">₹70</string>
+    <string name="wallet_amount_80">₹80</string>
+    <string name="wallet_amount_90">₹90</string>
+    <string name="wallet_amount_100">₹100</string>
+    <string name="wallet_add_money_subtitle">Choose an amount or enter your own</string>
+    <string name="wallet_custom_amount_hint">Enter custom amount</string>
+    <string name="wallet_add_money_cta">ADD MONEY</string>
+    <string name="wallet_withdraw_cta">WITHDRAW COINS</string>
+    <string name="wallet_withdraw_desc">Withdraw</string>
+    <string name="wallet_secure_label">Secure Wallet</string>
+    <string name="wallet_protected_label">Protected Payments</string>
+    <string name="wallet_shield_desc">Secure</string>
+    <string name="wallet_history_title">Payment History</string>
+    <string name="wallet_history_empty_title">No transactions yet</string>
+    <string name="wallet_history_empty_desc">Your deposits, withdrawals and contest entries will appear here.</string>
+    <string name="wallet_history_empty_icon_desc">No transactions</string>
+    <string name="wallet_invalid_amount">Enter a valid amount</string>
+    <string name="wallet_amount_range_error">Enter an amount between ₹1 and ₹1,00,000</string>
+    <string name="wallet_creating_order">Creating secure payment order…</string>
+    <string name="wallet_add_success">Coins added to your wallet!</string>
+    <string name="wallet_withdraw_disabled">Withdrawal will be enabled after verified payout setup.</string>
 </resources>

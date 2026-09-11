@@ -1,0 +1,628 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@drawable/background_wallet"
+    android:fillViewport="true"
+    android:overScrollMode="never"
+    android:clipToPadding="false"
+    android:fitsSystemWindows="true">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:paddingBottom="@dimen/wallet_screen_padding_bottom">
+
+        <!-- ============ TOP APP BAR ============ -->
+        <androidx.constraintlayout.widget.ConstraintLayout
+            android:layout_width="match_parent"
+            android:layout_height="@dimen/wallet_topbar_height"
+            android:layout_marginStart="@dimen/wallet_screen_padding_h"
+            android:layout_marginTop="@dimen/space_8"
+            android:layout_marginEnd="@dimen/wallet_screen_padding_h"
+            android:layout_marginBottom="@dimen/wallet_screen_padding_h"
+            android:background="@drawable/background_topbar">
+
+            <TextView
+                android:id="@+id/wallet_back"
+                android:layout_width="@dimen/wallet_topbar_icon"
+                android:layout_height="@dimen/wallet_topbar_icon"
+                android:layout_marginStart="10dp"
+                android:background="@drawable/background_icon_circle"
+                android:clickable="true"
+                android:focusable="true"
+                android:gravity="center"
+                android:includeFontPadding="false"
+                android:text="‹"
+                android:textColor="@color/text_primary"
+                android:textSize="26sp"
+                android:contentDescription="@string/wallet_back_desc"
+                app:layout_constraintBottom_toBottomOf="parent"
+                app:layout_constraintStart_toStartOf="parent"
+                app:layout_constraintTop_toTopOf="parent" />
+
+            <TextView
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:gravity="center"
+                android:text="@string/wallet_title"
+                android:textColor="@color/text_primary"
+                android:textSize="25sp"
+                android:textStyle="bold"
+                app:layout_constraintBottom_toBottomOf="parent"
+                app:layout_constraintEnd_toStartOf="@id/wallet_topbar_coin"
+                app:layout_constraintStart_toEndOf="@id/wallet_back"
+                app:layout_constraintTop_toTopOf="parent" />
+
+            <FrameLayout
+                android:id="@+id/wallet_topbar_coin"
+                android:layout_width="@dimen/wallet_topbar_icon"
+                android:layout_height="@dimen/wallet_topbar_icon"
+                android:layout_marginEnd="10dp"
+                android:background="@drawable/background_icon_circle"
+                app:layout_constraintBottom_toBottomOf="parent"
+                app:layout_constraintEnd_toEndOf="parent"
+                app:layout_constraintTop_toTopOf="parent">
+
+                <ImageView
+                    android:layout_width="22dp"
+                    android:layout_height="22dp"
+                    android:layout_gravity="center"
+                    android:src="@drawable/ic_coin"
+                    android:contentDescription="@string/wallet_coin_desc" />
+            </FrameLayout>
+        </androidx.constraintlayout.widget.ConstraintLayout>
+
+        <!-- ============ CONTENT ============ -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:paddingStart="@dimen/wallet_screen_padding_h"
+            android:paddingEnd="@dimen/wallet_screen_padding_h">
+
+            <!-- ============ BALANCE CARD ============ -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginBottom="@dimen/space_26"
+                android:background="@drawable/background_card"
+                android:elevation="3dp"
+                android:orientation="vertical"
+                android:padding="@dimen/wallet_balance_card_padding">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginBottom="12dp"
+                    android:letterSpacing="0.08"
+                    android:text="@string/wallet_total_balance_label"
+                    android:textColor="@color/wallet_text_secondary"
+                    android:textSize="16sp"
+                    android:textStyle="bold" />
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal">
+
+                    <ImageView
+                        android:layout_width="@dimen/wallet_coin_icon"
+                        android:layout_height="@dimen/wallet_coin_icon"
+                        android:scaleType="centerInside"
+                        android:src="@drawable/ic_coin"
+                        android:contentDescription="@string/wallet_coin_desc" />
+
+                    <TextView
+                        android:id="@+id/wallet_total"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginStart="14dp"
+                        android:gravity="center_vertical"
+                        android:text="₹0"
+                        android:textColor="@color/text_primary"
+                        android:textSize="40sp"
+                        android:textStyle="bold" />
+                </LinearLayout>
+
+                <!-- Deposit / Winning breakdown -->
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="@dimen/wallet_pill_height"
+                    android:layout_marginTop="18dp"
+                    android:background="@drawable/background_pill"
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal"
+                    android:paddingStart="16dp"
+                    android:paddingEnd="16dp">
+
+                    <LinearLayout
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:gravity="start|center_vertical"
+                        android:orientation="horizontal">
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:maxLines="1"
+                            android:text="@string/wallet_deposit_balance_label"
+                            android:textColor="@color/wallet_text_secondary"
+                            android:textSize="11sp" />
+
+                        <ImageView
+                            android:layout_width="12dp"
+                            android:layout_height="12dp"
+                            android:layout_marginStart="4dp"
+                            android:src="@drawable/ic_coin"
+                            android:contentDescription="@null" />
+
+                        <TextView
+                            android:id="@+id/wallet_deposit_amount"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_marginStart="3dp"
+                            android:maxLines="1"
+                            android:text="₹0"
+                            android:textColor="@color/text_primary"
+                            android:textSize="12sp"
+                            android:textStyle="bold" />
+                    </LinearLayout>
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginStart="5dp"
+                        android:layout_marginEnd="5dp"
+                        android:text="•"
+                        android:textColor="@color/wallet_text_muted"
+                        android:textSize="14sp" />
+
+                    <LinearLayout
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:gravity="end|center_vertical"
+                        android:orientation="horizontal">
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:maxLines="1"
+                            android:text="@string/wallet_winning_balance_label"
+                            android:textColor="@color/wallet_text_secondary"
+                            android:textSize="11sp" />
+
+                        <ImageView
+                            android:layout_width="12dp"
+                            android:layout_height="12dp"
+                            android:layout_marginStart="4dp"
+                            android:src="@drawable/ic_coin"
+                            android:contentDescription="@null" />
+
+                        <TextView
+                            android:id="@+id/wallet_winning_amount"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_marginStart="3dp"
+                            android:maxLines="1"
+                            android:text="₹0"
+                            android:textColor="@color/text_primary"
+                            android:textSize="12sp"
+                            android:textStyle="bold" />
+                    </LinearLayout>
+                </LinearLayout>
+
+                <!-- Kept for backward compatibility with existing balance-render logic; not shown -->
+                <TextView
+                    android:id="@+id/wallet_breakdown"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:visibility="gone" />
+            </LinearLayout>
+
+            <!-- ============ ADD MONEY ============ -->
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginBottom="4dp"
+                android:text="@string/wallet_add_money_title"
+                android:textColor="@color/text_primary"
+                android:textSize="24sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginBottom="14dp"
+                android:text="@string/wallet_add_money_subtitle"
+                android:textColor="@color/wallet_text_muted"
+                android:textSize="13sp" />
+
+            <!-- Row 1: ₹10 - ₹50 -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="@dimen/wallet_amount_btn_height"
+                android:layout_marginBottom="10dp"
+                android:orientation="horizontal">
+
+                <TextView
+                    android:id="@+id/wallet_add_10"
+                    android:layout_width="0dp"
+                    android:layout_height="match_parent"
+                    android:layout_weight="1"
+                    android:background="@drawable/background_amount_selector"
+                    android:clickable="true"
+                    android:focusable="true"
+                    android:drawableStart="@drawable/ic_coin_small"
+                    android:drawablePadding="3dp"
+                    android:gravity="center"
+                    android:maxLines="1"
+                    android:paddingStart="2dp"
+                    android:paddingEnd="2dp"
+                    android:text="@string/wallet_amount_10"
+                    android:textColor="@color/text_primary"
+                    android:textSize="12sp"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:id="@+id/wallet_add_20"
+                    android:layout_width="0dp"
+                    android:layout_height="match_parent"
+                    android:layout_marginStart="5dp"
+                    android:layout_weight="1"
+                    android:background="@drawable/background_amount_selector"
+                    android:clickable="true"
+                    android:focusable="true"
+                    android:drawableStart="@drawable/ic_coin_small"
+                    android:drawablePadding="3dp"
+                    android:gravity="center"
+                    android:maxLines="1"
+                    android:paddingStart="2dp"
+                    android:paddingEnd="2dp"
+                    android:text="@string/wallet_amount_20"
+                    android:textColor="@color/text_primary"
+                    android:textSize="12sp"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:id="@+id/wallet_add_30"
+                    android:layout_width="0dp"
+                    android:layout_height="match_parent"
+                    android:layout_marginStart="5dp"
+                    android:layout_weight="1"
+                    android:background="@drawable/background_amount_selector"
+                    android:clickable="true"
+                    android:focusable="true"
+                    android:drawableStart="@drawable/ic_coin_small"
+                    android:drawablePadding="3dp"
+                    android:gravity="center"
+                    android:maxLines="1"
+                    android:paddingStart="2dp"
+                    android:paddingEnd="2dp"
+                    android:text="@string/wallet_amount_30"
+                    android:textColor="@color/text_primary"
+                    android:textSize="12sp"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:id="@+id/wallet_add_40"
+                    android:layout_width="0dp"
+                    android:layout_height="match_parent"
+                    android:layout_marginStart="5dp"
+                    android:layout_weight="1"
+                    android:background="@drawable/background_amount_selector"
+                    android:clickable="true"
+                    android:focusable="true"
+                    android:drawableStart="@drawable/ic_coin_small"
+                    android:drawablePadding="3dp"
+                    android:gravity="center"
+                    android:maxLines="1"
+                    android:paddingStart="2dp"
+                    android:paddingEnd="2dp"
+                    android:text="@string/wallet_amount_40"
+                    android:textColor="@color/text_primary"
+                    android:textSize="12sp"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:id="@+id/wallet_add_50"
+                    android:layout_width="0dp"
+                    android:layout_height="match_parent"
+                    android:layout_marginStart="5dp"
+                    android:layout_weight="1"
+                    android:background="@drawable/background_amount_selector"
+                    android:clickable="true"
+                    android:focusable="true"
+                    android:drawableStart="@drawable/ic_coin_small"
+                    android:drawablePadding="3dp"
+                    android:gravity="center"
+                    android:maxLines="1"
+                    android:paddingStart="2dp"
+                    android:paddingEnd="2dp"
+                    android:text="@string/wallet_amount_50"
+                    android:textColor="@color/text_primary"
+                    android:textSize="12sp"
+                    android:textStyle="bold" />
+            </LinearLayout>
+
+            <!-- Row 2: ₹60 - ₹100 -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="@dimen/wallet_amount_btn_height"
+                android:orientation="horizontal">
+
+                <TextView
+                    android:id="@+id/wallet_add_60"
+                    android:layout_width="0dp"
+                    android:layout_height="match_parent"
+                    android:layout_weight="1"
+                    android:background="@drawable/background_amount_selector"
+                    android:clickable="true"
+                    android:focusable="true"
+                    android:drawableStart="@drawable/ic_coin_small"
+                    android:drawablePadding="3dp"
+                    android:gravity="center"
+                    android:maxLines="1"
+                    android:paddingStart="2dp"
+                    android:paddingEnd="2dp"
+                    android:text="@string/wallet_amount_60"
+                    android:textColor="@color/text_primary"
+                    android:textSize="12sp"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:id="@+id/wallet_add_70"
+                    android:layout_width="0dp"
+                    android:layout_height="match_parent"
+                    android:layout_marginStart="5dp"
+                    android:layout_weight="1"
+                    android:background="@drawable/background_amount_selector"
+                    android:clickable="true"
+                    android:focusable="true"
+                    android:drawableStart="@drawable/ic_coin_small"
+                    android:drawablePadding="3dp"
+                    android:gravity="center"
+                    android:maxLines="1"
+                    android:paddingStart="2dp"
+                    android:paddingEnd="2dp"
+                    android:text="@string/wallet_amount_70"
+                    android:textColor="@color/text_primary"
+                    android:textSize="12sp"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:id="@+id/wallet_add_80"
+                    android:layout_width="0dp"
+                    android:layout_height="match_parent"
+                    android:layout_marginStart="5dp"
+                    android:layout_weight="1"
+                    android:background="@drawable/background_amount_selector"
+                    android:clickable="true"
+                    android:focusable="true"
+                    android:drawableStart="@drawable/ic_coin_small"
+                    android:drawablePadding="3dp"
+                    android:gravity="center"
+                    android:maxLines="1"
+                    android:paddingStart="2dp"
+                    android:paddingEnd="2dp"
+                    android:text="@string/wallet_amount_80"
+                    android:textColor="@color/text_primary"
+                    android:textSize="12sp"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:id="@+id/wallet_add_90"
+                    android:layout_width="0dp"
+                    android:layout_height="match_parent"
+                    android:layout_marginStart="5dp"
+                    android:layout_weight="1"
+                    android:background="@drawable/background_amount_selector"
+                    android:clickable="true"
+                    android:focusable="true"
+                    android:drawableStart="@drawable/ic_coin_small"
+                    android:drawablePadding="3dp"
+                    android:gravity="center"
+                    android:maxLines="1"
+                    android:paddingStart="2dp"
+                    android:paddingEnd="2dp"
+                    android:text="@string/wallet_amount_90"
+                    android:textColor="@color/text_primary"
+                    android:textSize="12sp"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:id="@+id/wallet_add_100"
+                    android:layout_width="0dp"
+                    android:layout_height="match_parent"
+                    android:layout_marginStart="5dp"
+                    android:layout_weight="1"
+                    android:background="@drawable/background_amount_selector"
+                    android:clickable="true"
+                    android:focusable="true"
+                    android:drawableStart="@drawable/ic_coin_small"
+                    android:drawablePadding="3dp"
+                    android:gravity="center"
+                    android:maxLines="1"
+                    android:paddingStart="2dp"
+                    android:paddingEnd="2dp"
+                    android:text="@string/wallet_amount_100"
+                    android:textColor="@color/text_primary"
+                    android:textSize="12sp"
+                    android:textStyle="bold" />
+            </LinearLayout>
+
+            <!-- ============ CUSTOM AMOUNT ============ -->
+            <EditText
+                android:id="@+id/wallet_custom_amount"
+                android:layout_width="match_parent"
+                android:layout_height="@dimen/wallet_input_height"
+                android:layout_marginTop="12dp"
+                android:layout_marginBottom="16dp"
+                android:background="@drawable/background_input"
+                android:drawableStart="@drawable/ic_coin"
+                android:drawableEnd="@drawable/ic_edit_pencil"
+                android:drawablePadding="10dp"
+                android:gravity="center_vertical"
+                android:hint="@string/wallet_custom_amount_hint"
+                android:inputType="numberDecimal"
+                android:singleLine="true"
+                android:paddingStart="16dp"
+                android:paddingEnd="16dp"
+                android:textColor="@color/text_primary"
+                android:textColorHint="@color/wallet_text_muted"
+                android:textCursorDrawable="@null"
+                android:textSize="16sp" />
+
+            <!-- ============ ADD MONEY CTA ============ -->
+            <TextView
+                android:id="@+id/wallet_add_money"
+                android:layout_width="match_parent"
+                android:layout_height="@dimen/wallet_cta_height"
+                android:layout_marginBottom="14dp"
+                android:background="@drawable/background_button_red"
+                android:clickable="true"
+                android:elevation="4dp"
+                android:focusable="true"
+                android:gravity="center"
+                android:text="@string/wallet_add_money_cta"
+                android:textColor="@color/text_primary"
+                android:textSize="18sp"
+                android:textStyle="bold" />
+
+            <!-- ============ WITHDRAW ============ -->
+            <TextView
+                android:id="@+id/wallet_withdraw"
+                android:layout_width="match_parent"
+                android:layout_height="@dimen/wallet_withdraw_height"
+                android:layout_marginBottom="18dp"
+                android:background="@drawable/background_button_outline"
+                android:clickable="true"
+                android:focusable="true"
+                android:drawableStart="@drawable/ic_withdraw"
+                android:drawablePadding="10dp"
+                android:gravity="center"
+                android:paddingStart="16dp"
+                android:paddingEnd="16dp"
+                android:text="@string/wallet_withdraw_cta"
+                android:textColor="@color/wallet_text_secondary"
+                android:textSize="16sp"
+                android:textStyle="bold" />
+
+            <!-- ============ SECURITY INFO ============ -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginBottom="26dp"
+                android:gravity="center"
+                android:orientation="horizontal">
+
+                <ImageView
+                    android:layout_width="18dp"
+                    android:layout_height="18dp"
+                    android:alpha="0.55"
+                    android:src="@drawable/ic_shield_check"
+                    android:contentDescription="@string/wallet_shield_desc" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="6dp"
+                    android:text="@string/wallet_secure_label"
+                    android:textColor="@color/wallet_text_faint"
+                    android:textSize="12sp" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="6dp"
+                    android:layout_marginEnd="6dp"
+                    android:text="•"
+                    android:textColor="@color/wallet_text_faint"
+                    android:textSize="12sp" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="@string/wallet_protected_label"
+                    android:textColor="@color/wallet_text_faint"
+                    android:textSize="12sp" />
+            </LinearLayout>
+
+            <!-- ============ PAYMENT HISTORY ============ -->
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginBottom="14dp"
+                android:text="@string/wallet_history_title"
+                android:textColor="@color/text_primary"
+                android:textSize="23sp"
+                android:textStyle="bold" />
+
+            <FrameLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:minHeight="@dimen/wallet_history_card_min_height"
+                android:background="@drawable/background_card_history">
+
+                <!-- Empty state -->
+                <LinearLayout
+                    android:id="@+id/wallet_history_empty"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:gravity="center"
+                    android:orientation="vertical"
+                    android:padding="20dp">
+
+                    <FrameLayout
+                        android:layout_width="@dimen/wallet_history_empty_icon_box"
+                        android:layout_height="@dimen/wallet_history_empty_icon_box"
+                        android:background="@drawable/background_icon_circle">
+
+                        <ImageView
+                            android:layout_width="26dp"
+                            android:layout_height="26dp"
+                            android:layout_gravity="center"
+                            android:src="@drawable/ic_wallet_outline"
+                            android:contentDescription="@string/wallet_history_empty_icon_desc" />
+                    </FrameLayout>
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="12dp"
+                        android:text="@string/wallet_history_empty_title"
+                        android:textColor="@color/text_primary"
+                        android:textSize="17sp"
+                        android:textStyle="bold" />
+
+                    <TextView
+                        android:layout_width="@dimen/wallet_history_desc_max_width"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="6dp"
+                        android:gravity="center"
+                        android:lineSpacingExtra="2dp"
+                        android:text="@string/wallet_history_empty_desc"
+                        android:textColor="@color/wallet_history_desc"
+                        android:textSize="13sp" />
+                </LinearLayout>
+
+                <!-- Transaction list (shown when history is non-empty) -->
+                <androidx.recyclerview.widget.RecyclerView
+                    android:id="@+id/wallet_history_recycler"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_margin="8dp"
+                    android:nestedScrollingEnabled="false"
+                    android:visibility="gone"
+                    tools:itemCount="3"
+                    tools:listitem="@layout/item_transaction" />
+            </FrameLayout>
+        </LinearLayout>
+    </LinearLayout>
+</ScrollView>
