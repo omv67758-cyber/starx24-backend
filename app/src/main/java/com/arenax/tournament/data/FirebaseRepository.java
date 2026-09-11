@@ -90,6 +90,61 @@ public final class FirebaseRepository {
         return root().child("notifications");
     }
 
+    public static DatabaseReference withdrawals() { return root().child("withdrawals"); }
+    public static DatabaseReference adminUsers() { return root().child("adminUsers"); }
+
+    public static Task<Void> bootstrapMaster(String uid, String email) {
+        Map<String, Object> record = new HashMap<>();
+        record.put("uid", uid);
+        record.put("email", email);
+        record.put("role", "MASTER_CONTROL");
+        record.put("enabled", true);
+        record.put("status", "ACTIVE");
+        record.put("createdAt", ServerValue.TIMESTAMP);
+        record.put("updatedAt", ServerValue.TIMESTAMP);
+        return adminUsers().child(uid).setValue(record);
+    }
+
+    /**
+     * Server-authoritative, idempotent payment transition. A Firebase transaction
+     * makes concurrent admins contend on the same status value; only PENDING can
+    * become PAID, so a second approval cannot succeed.
+     */
+    public static Task<Void> markWithdrawalPaid(String withdrawalId, String note) {
+        com.google.android.gms.tasks.TaskCompletionSource<Void> completion = new com.google.android.gms.tasks.TaskCompletionSource<>();
+        withdrawals().child(withdrawalId).child("status").runTransaction(new com.google.firebase.database.Transaction.Handler() {
+            @Override public com.google.firebase.database.Transaction.Result doTransaction(com.google.firebase.database.MutableData current) {
+                if (!"PENDING".equals(String.valueOf(current.getValue()))) return com.google.firebase.database.Transaction.abort();
+                current.setValue("PAID");
+                return com.google.firebase.database.Transaction.success(current);
+            }
+            @Override public void onComplete(com.google.firebase.database.DatabaseError error, boolean committed, com.google.firebase.database.DataSnapshot snapshot) {
+                if (error != null) { completion.setException(error.toException()); return; }
+                if (!committed) { completion.setException(new IllegalStateException("Withdrawal is no longer pending")); return; }
+                Map<String, Object> update = new HashMap<>();
+                update.put("paidAt", ServerValue.TIMESTAMP);
+                update.put("updatedAt", ServerValue.TIMESTAMP);
+                update.put("handledBy", currentUser() == null ? "unknown" : currentUser().getUid());
+                update.put("adminNote", note == null ? "" : note.trim());
+                withdrawals().child(withdrawalId).updateChildren(update);
+                logActivity("PAYMENT_APPROVED", withdrawalId, note);
+                completion.setResult(null);
+            }
+        });
+        return completion.getTask();
+    }
+
+    public static Task<Void> addUserNotification(String userId, String title, String message, String type) {
+        Map<String, Object> notification = new HashMap<>();
+        notification.put("userId", userId);
+        notification.put("title", title);
+        notification.put("message", message);
+        notification.put("type", type == null ? "GENERAL" : type);
+        notification.put("createdAt", ServerValue.TIMESTAMP);
+        notification.put("read", false);
+        return notifications().push().setValue(notification);
+    }
+
     public static DatabaseReference results() {
         return root().child("results");
     }

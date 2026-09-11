@@ -58,6 +58,7 @@ The backend uses Firebase Admin SDK, so it can credit `users/<uid>/wallet/balanc
 
 Keep the existing Firebase Realtime Database rules deployed, and test with `ZAPUPI_MODE=TEST` first. Move to live mode only after ZapUPI account/compliance approval and a successful end-to-end test.
 
-## Security note
+## Notifications and security
 
-The payment key previously shared in chat should be rotated in ZapUPI before production use, because secrets pasted into chat or committed files must be treated as exposed. Store the replacement only in Render's secret environment variable.
+- Room-release push notifications are sent through `/admin/notifyParticipants`. The Android app does not contain a Firebase service-account file or FCM OAuth private key.
+- The payment key previously shared in chat should be rotated in ZapUPI before production use, because secrets pasted into chat or committed files must be treated as exposed. Store the replacement only in Render's secret environment variable.

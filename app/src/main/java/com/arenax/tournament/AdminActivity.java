@@ -34,8 +34,6 @@ import com.arenax.tournament.data.FirebaseRepository;
 import com.arenax.tournament.model.Banner;
 import com.arenax.tournament.model.GameMode;
 import com.arenax.tournament.model.Tournament;
-import com.arenax.tournament.util.AccessTokenProvider;
-import com.arenax.tournament.util.FcmSender;
 import com.bumptech.glide.Glide;
 import com.google.android.material.button.MaterialButton;
 import com.google.android.material.dialog.MaterialAlertDialogBuilder;
@@ -44,6 +42,15 @@ import com.google.firebase.database.DataSnapshot;
 import com.google.firebase.database.DatabaseError;
 import com.google.firebase.database.DatabaseReference;
 import com.google.firebase.database.ValueEventListener;
+import com.google.firebase.auth.FirebaseAuth;
+
+import okhttp3.MediaType;
+import okhttp3.OkHttpClient;
+import okhttp3.Request;
+import okhttp3.RequestBody;
+import okhttp3.Response;
+
+import org.json.JSONObject;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -1043,28 +1050,52 @@ public class AdminActivity extends AppCompatActivity {
     }
 
     /**
-     * A19 — Targeted room-release push: notifies ONLY the joined participants under
-     * participantsRef (a tournament's or match's "participants" node), never "All Users".
-     * Looks up each participant's /users/{uid}/fcmToken, then sends via the FCM HTTP v1 API
-     * using the on-device service account (see AccessTokenProvider). Silently does nothing
-     * if the ADMIN build has no assets/service-account.json bundled yet, or nobody has a
-     * saved token — the DB write + in-app GLOBAL notice already happened either way.
+     * A19 — Targeted room-release push. The Android app sends only the target
+     * scope and message to the trusted backend; Firebase/FCM credentials never
+     * enter an APK and participant tokens never leave the server.
      */
-    private void sendRoomReleasePush(com.google.firebase.database.DatabaseReference participantsRef,
-                                      String title, String body) {
-        FirebaseRepository.collectParticipantFcmTokens(participantsRef, tokens -> {
-            if (tokens.isEmpty()) return;
-            new Thread(() -> {
-                try {
-                    String accessToken = AccessTokenProvider.getAccessToken(getApplicationContext());
-                    FcmSender.sendToAllTokens(accessToken, tokens, title, body, "",
-                            (successCount, total, errorLog) -> runOnUiThread(() ->
-                                    toast("Notified " + successCount + "/" + total + " joined player(s).")));
-                } catch (Exception e) {
-                    runOnUiThread(() -> toast("Push notify failed: " + e.getMessage()));
-                }
-            }).start();
-        });
+    private void sendRoomReleasePush(String targetType, String targetId, String title, String body) {
+        if (FirebaseAuth.getInstance().getCurrentUser() == null) return;
+        FirebaseAuth.getInstance().getCurrentUser().getIdToken(false)
+                .addOnSuccessListener(result -> {
+                    String idToken = result == null ? "" : String.valueOf(result.getToken());
+                    if (idToken.trim().isEmpty()) return;
+                    try {
+                        JSONObject payload = new JSONObject();
+                        payload.put("targetType", targetType);
+                        payload.put("targetId", targetId);
+                        payload.put("title", title);
+                        payload.put("body", body);
+                        Request request = new Request.Builder()
+                                .url(BuildConfig.STARX_API_BASE_URL + "/admin/notifyParticipants")
+                                .post(RequestBody.create(payload.toString(), MediaType.parse("application/json")))
+                                .addHeader("Authorization", "Bearer " + idToken)
+                                .build();
+                        new OkHttpClient().newCall(request).enqueue(new okhttp3.Callback() {
+                            @Override public void onFailure(okhttp3.Call call, java.io.IOException error) {
+                                runOnUiThread(() -> toast("Push notification could not be sent."));
+                            }
+                            @Override public void onResponse(okhttp3.Call call, Response response) throws java.io.IOException {
+                                String text = response.body() == null ? "" : response.body().string();
+                                response.close();
+                                if (!response.isSuccessful()) {
+                                    runOnUiThread(() -> toast("Push notification failed."));
+                                    return;
+                                }
+                                try {
+                                    JSONObject resultJson = new JSONObject(text);
+                                    int sent = resultJson.optInt("sent", 0);
+                                    int total = resultJson.optInt("total", 0);
+                                    runOnUiThread(() -> toast("Notified " + sent + "/" + total + " joined player(s)."));
+                                } catch (Exception ignored) {
+                                    runOnUiThread(() -> toast("Push notification completed."));
+                                }
+                            }
+                        });
+                    } catch (Exception ignored) {
+                        toast("Push notification could not be prepared.");
+                    }
+                });
     }
 
     private void updateRoom(Tournament t, String roomId, String roomPass, boolean released,
@@ -1086,7 +1117,7 @@ public class AdminActivity extends AppCompatActivity {
                                     : (delayReason.isEmpty() ? t.getTitle() + " room hidden."
                                     : t.getTitle() + " delayed: " + delayReason));
                     if (released) {
-                        sendRoomReleasePush(FirebaseRepository.tournamentParticipants(t.getId()),
+                        sendRoomReleasePush("tournament", t.getId(),
                                 t.getTitle() + " — Room Released!",
                                 "Room ID: " + roomId + " | Password: " + roomPass);
                     }
@@ -1624,7 +1655,7 @@ public class AdminActivity extends AppCompatActivity {
                     FirebaseRepository.releaseMatchRoom(m.getId(), id, pass);
                     FirebaseRepository.logActivity("MATCH_ROOM_RELEASED", m.getName(), "Room " + id);
                     FirebaseRepository.publishNotification("Room Released", m.getName() + " room ID & password are now live.");
-                    sendRoomReleasePush(FirebaseRepository.matchParticipants(m.getId()),
+                    sendRoomReleasePush("match", m.getId(),
                             m.getName() + " — Room Released!",
                             "Room ID: " + id + " | Password: " + pass);
                     toast("Room released live to players.");

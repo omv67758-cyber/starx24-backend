@@ -16,7 +16,7 @@ if (modulePropertiesFile.exists()) {
 }
 // The Render URL is public and safe to include in the APK. The ZapUPI key
 // remains server-side and is never read by this Android build.
-def defaultBackendBaseUrl = "https://starx24-backend.onrender.com"
+def defaultBackendBaseUrl = "https://starx24-backend-1.onrender.com"
 def backendBaseUrl = localProperties.getProperty("backend.base.url", defaultBackendBaseUrl).trim()
 if (project.hasProperty("backend.base.url")) {
     backendBaseUrl = project.property("backend.base.url").toString().trim()
@@ -49,15 +49,20 @@ android {
             applicationId "com.tournament.user"
             versionNameSuffix "-user"
         }
-        admin {
+        paymentAdmin {
+            dimension "role"
+            applicationId "com.tournament.payment"
+            versionNameSuffix "-payment-admin"
+        }
+        matchAdmin {
+            dimension "role"
+            applicationId "com.tournament.match"
+            versionNameSuffix "-match-admin"
+        }
+        masterControl {
             dimension "role"
             applicationId "com.tournament.admin"
-            versionNameSuffix "-admin"
-        }
-        messenger {
-            dimension "role"
-            applicationId "com.tournament.message"
-            versionNameSuffix "-message"
+            versionNameSuffix "-master-control"
         }
     }
 
@@ -93,8 +98,9 @@ dependencies {
     implementation 'com.google.firebase:firebase-storage'
     implementation 'com.google.firebase:firebase-messaging'
     implementation 'com.github.bumptech.glide:glide:4.16.0'
+    implementation 'androidx.browser:browser:1.8.0'
 
-    // Targeted room-release push (admin flavor): signs its own FCM v1 API calls on-device
-    // using assets/service-account.json — see AccessTokenProvider's security warning.
+    // OkHttp is used for the private Render API and admin provisioning/notification calls.
+    // Firebase Admin/FCM credentials remain server-side and are never packaged in the APK.
     implementation 'com.squareup.okhttp3:okhttp:4.12.0'
 }

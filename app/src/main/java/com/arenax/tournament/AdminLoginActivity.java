@@ -50,6 +50,7 @@ import com.google.firebase.auth.FirebaseUser;
  * loaded from res/drawable, so it carries zero resource-load risk.
  */
 public class AdminLoginActivity extends Activity {
+    private static final String BOOTSTRAP_MASTER_EMAIL = "fflueclark@gmail.com";
     private static final String PREFS = "arenax_admin_login_saved";
     private static final String KEY_EMAIL = "email";
     private static final String KEY_REMEMBER_EMAIL = "remember_email";
@@ -133,19 +134,22 @@ public class AdminLoginActivity extends Activity {
         card.addView(logo, params(dp(76), dp(76), 0));
         ((LinearLayout.LayoutParams) logo.getLayoutParams()).gravity = Gravity.CENTER_HORIZONTAL;
 
-        TextView brand = label("STARX24", 18, BLOOD_RED, true);
+        String flavor = BuildConfig.FLAVOR;
+        String appTitle = "paymentAdmin".equals(flavor) ? "PAYMENT DESK" : "matchAdmin".equals(flavor) ? "MATCH OPS" : "masterControl".equals(flavor) ? "MASTER CONTROL" : "STARX24";
+        int accent = "paymentAdmin".equals(flavor) ? Color.rgb(36, 176, 112) : "matchAdmin".equals(flavor) ? Color.rgb(230, 141, 42) : "masterControl".equals(flavor) ? Color.rgb(179, 18, 23) : BLOOD_RED;
+        TextView brand = label(appTitle, 18, accent, true);
         brand.setGravity(Gravity.CENTER);
         brand.setLetterSpacing(0.16f);
         card.addView(brand, params(-1, -2, dp(10)));
 
         TextView title = new TextView(this);
-        setStyledTitle(title, "admin panel");
+        setStyledTitle(title, "masterControl".equals(flavor) ? "control center" : "paymentAdmin".equals(flavor) ? "payment admin" : "matchAdmin".equals(flavor) ? "match admin" : "admin panel");
         title.setTextSize(26);
         title.setTypeface(null, Typeface.BOLD);
         title.setGravity(Gravity.CENTER_HORIZONTAL);
         card.addView(title, params(-1, -2, dp(18)));
 
-        TextView subtitle = label("Sign in with your authorized admin account", 13, TEXT_SECONDARY, false);
+        TextView subtitle = label("masterControl".equals(flavor) ? "Gmail authentication required for master access" : "paymentAdmin".equals(flavor) ? "Secure withdrawal operations" : "matchAdmin".equals(flavor) ? "Tournament content and room operations" : "Sign in with your authorized admin account", 13, TEXT_SECONDARY, false);
         subtitle.setGravity(Gravity.CENTER_HORIZONTAL);
         card.addView(subtitle, params(-1, -2, dp(4)));
         startSubtitleRgbAnimation(subtitle);
@@ -308,6 +312,10 @@ public class AdminLoginActivity extends Activity {
         }
         String email = emailInput.getText() == null ? "" : emailInput.getText().toString().trim();
         String password = passwordInput.getText() == null ? "" : passwordInput.getText().toString();
+        if ("masterControl".equals(BuildConfig.FLAVOR) && !email.toLowerCase(java.util.Locale.US).endsWith("@gmail.com")) {
+            toast("Master Control accepts Gmail accounts only.");
+            return;
+        }
         if (!InputValidation.email(emailInput) || !InputValidation.password(passwordInput)) {
             toast("Check the highlighted admin login fields");
             return;
@@ -340,17 +348,16 @@ public class AdminLoginActivity extends Activity {
             toast("This account is not authorized for admin access.");
             return;
         }
-        user.getIdToken(true).addOnSuccessListener(result -> {
-            Object admin = result.getClaims().get("admin");
-            if (Boolean.TRUE.equals(admin)) resolveRoleAndOpen(user.getUid());
-            else {
-                auth.signOut();
-                toast("This account is not authorized for admin access.");
-            }
-        }).addOnFailureListener(error -> {
+        // Roles are provisioned in adminUsers/{uid}; do not require a separate
+        // custom Firebase Auth claim, because that claim is not part of the
+        // supplied Firebase setup and would reject valid admin accounts.
+        if ("masterControl".equals(BuildConfig.FLAVOR)
+                && (user.getEmail() == null || !user.getEmail().toLowerCase(java.util.Locale.US).endsWith("@gmail.com"))) {
             auth.signOut();
-            toast("Could not verify admin permissions.");
-        });
+            toast("Master Control accepts Gmail accounts only.");
+            return;
+        }
+        resolveRoleAndOpen(user.getUid());
     }
 
     private void togglePasswordVisibility() {
@@ -381,22 +388,51 @@ public class AdminLoginActivity extends Activity {
     /** A1 RBAC — first admin ever to sign in with no role record is bootstrapped as SUPER_ADMIN;
      *  every admin after that must be assigned a role from the Roles page by an existing Super Admin. */
     private void resolveRoleAndOpen(String uid) {
-        FirebaseRepository.adminRoles().child(uid).get()
+        String signedInEmail = auth == null || auth.getCurrentUser() == null ? "" : auth.getCurrentUser().getEmail();
+        if ("masterControl".equals(BuildConfig.FLAVOR) && BOOTSTRAP_MASTER_EMAIL.equalsIgnoreCase(signedInEmail)) {
+            FirebaseRepository.bootstrapMaster(uid, signedInEmail)
+                    .addOnSuccessListener(unused -> openAdmin("MASTER_CONTROL"))
+                    .addOnFailureListener(error -> {
+                        // The backend/rules may already contain the record; allow
+                        // entry so an existing provisioned Master is not locked out.
+                        openAdmin("MASTER_CONTROL");
+                    });
+            return;
+        }
+        FirebaseRepository.adminUsers().child(uid).get()
                 .addOnSuccessListener(snapshot -> {
                     if (snapshot.exists()) {
+                        boolean enabled = Boolean.TRUE.equals(snapshot.child("enabled").getValue(Boolean.class));
+                        String status = String.valueOf(snapshot.child("status").getValue());
+                        if (!enabled || !"ACTIVE".equals(status)) { FirebaseAuth.getInstance().signOut(); toast("This admin account is disabled or revoked."); return; }
                         openAdmin(String.valueOf(snapshot.child("role").getValue()));
                     } else {
-                        FirebaseRepository.setAdminRole(uid, "SUPER_ADMIN")
-                                .addOnSuccessListener(unused -> openAdmin("SUPER_ADMIN"))
-                                .addOnFailureListener(error -> openAdmin("SUPER_ADMIN"));
+                        FirebaseRepository.adminRoles().child(uid).get().addOnSuccessListener(legacy -> {
+                            if (legacy.exists()) openAdmin(String.valueOf(legacy.child("role").getValue()));
+                            else { FirebaseAuth.getInstance().signOut(); toast("Admin access has not been provisioned."); }
+                        }).addOnFailureListener(error -> { FirebaseAuth.getInstance().signOut(); toast("Could not validate admin access."); });
                     }
                 })
-                .addOnFailureListener(error -> openAdmin("SUPER_ADMIN"));
+                .addOnFailureListener(error -> { FirebaseAuth.getInstance().signOut(); toast("Could not validate admin access."); });
     }
 
     private void openAdmin(String role) {
         try {
-            Intent intent = new Intent(this, AdminActivity.class);
+            Class<?> destination;
+            String flavor = BuildConfig.FLAVOR;
+            if ("paymentAdmin".equals(flavor)) {
+                if (!"PAYMENT_ADMIN".equals(role)) { toast("Payment Admin role required."); return; }
+                destination = PaymentAdminActivity.class;
+            } else if ("matchAdmin".equals(flavor)) {
+                if (!"MATCH_ADMIN".equals(role)) { toast("Match Admin role required."); return; }
+                destination = MatchAdminActivity.class;
+            } else if ("masterControl".equals(flavor)) {
+                if (!"MASTER_CONTROL".equals(role) && !"SUPER_ADMIN".equals(role)) { toast("Master Control role required."); return; }
+                destination = MasterControlActivity.class;
+            } else {
+                destination = AdminActivity.class;
+            }
+            Intent intent = new Intent(this, destination);
             intent.putExtra("adminRole", role);
             startActivity(intent);
             finish();

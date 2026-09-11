@@ -31,6 +31,12 @@ public final class ZapUpiClient {
         void onError(String message);
     }
 
+    public interface VerifyCallback {
+        /** status is "credited", "pending" or "failed". */
+        void onResult(String status);
+        void onError(String message);
+    }
+
     private static final MediaType JSON = MediaType.get("application/json; charset=utf-8");
     /*
      * Render services can sleep between requests. The default OkHttp timeout is
@@ -46,6 +52,38 @@ public final class ZapUpiClient {
             .retryOnConnectionFailure(true)
             .build();
     private static final Handler MAIN = new Handler(Looper.getMainLooper());
+
+    /**
+     * Fire-and-forget warm-up: call this as soon as the wallet screen opens (well before
+     * the user taps "Add Money"). It wakes the Render backend, which can otherwise take many
+     * seconds to cold-start on its first request, and primes Firebase's cached ID token so
+     * createOrder() doesn't have to wait on either of those the moment the user pays.
+     */
+    public static void warmUp() {
+        String baseUrl = BuildConfig.STARX_API_BASE_URL == null
+                ? "" : BuildConfig.STARX_API_BASE_URL.trim();
+        if (!baseUrl.isEmpty() && !baseUrl.contains("YOUR-SERVICE")) {
+            String normalizedBaseUrl = baseUrl.endsWith("/")
+                    ? baseUrl.substring(0, baseUrl.length() - 1) : baseUrl;
+            Request warmupRequest = new Request.Builder()
+                    .url(normalizedBaseUrl + "/health")
+                    .get()
+                    .build();
+            HTTP.newCall(warmupRequest).enqueue(new okhttp3.Callback() {
+                @Override public void onFailure(Call call, IOException error) {
+                    // Best-effort only — createOrder() will still retry the real request.
+                }
+                @Override public void onResponse(Call call, Response response) {
+                    response.close();
+                }
+            });
+        }
+
+        FirebaseUser user = FirebaseAuth.getInstance().getCurrentUser();
+        if (user != null) {
+            user.getIdToken(false); // Primes the SDK's cached token; result not needed here.
+        }
+    }
 
     private ZapUpiClient() { }
 
@@ -134,6 +172,76 @@ public final class ZapUpiClient {
             });
         } catch (Exception error) {
             MAIN.post(() -> callback.onError("Could not create payment order."));
+        }
+    }
+
+    /**
+     * Asks the backend to re-check this order with ZapUPI right now and credit the wallet
+     * immediately if it succeeded, instead of waiting for ZapUPI's webhook to arrive. Call this
+     * from onResume() as soon as the user comes back from the payment page, so coins land the
+     * moment they return to the app rather than only whenever the webhook happens to fire.
+     */
+    public static void verifyOrder(String orderId, VerifyCallback callback) {
+        String baseUrl = BuildConfig.STARX_API_BASE_URL == null
+                ? "" : BuildConfig.STARX_API_BASE_URL.trim();
+        if (baseUrl.isEmpty() || baseUrl.contains("YOUR-SERVICE")) {
+            callback.onError("Payment backend is not configured.");
+            return;
+        }
+
+        FirebaseUser user = FirebaseAuth.getInstance().getCurrentUser();
+        if (user == null) {
+            callback.onError("Not signed in.");
+            return;
+        }
+
+        user.getIdToken(false)
+                .addOnSuccessListener(result -> {
+                    String idToken = result == null ? null : result.getToken();
+                    if (idToken == null || idToken.trim().isEmpty()) {
+                        MAIN.post(() -> callback.onError("Could not verify your Firebase session."));
+                        return;
+                    }
+                    sendVerifyOrder(baseUrl, idToken, orderId, callback);
+                })
+                .addOnFailureListener(error ->
+                        MAIN.post(() -> callback.onError("Could not verify your Firebase session.")));
+    }
+
+    private static void sendVerifyOrder(String baseUrl, String idToken, String orderId, VerifyCallback callback) {
+        try {
+            JSONObject payload = new JSONObject();
+            payload.put("order_id", orderId);
+
+            String normalizedBaseUrl = baseUrl.endsWith("/")
+                    ? baseUrl.substring(0, baseUrl.length() - 1) : baseUrl;
+            Request request = new Request.Builder()
+                    .url(normalizedBaseUrl + "/verifyOrder")
+                    .post(RequestBody.create(payload.toString(), JSON))
+                    .addHeader("Authorization", "Bearer " + idToken)
+                    .build();
+
+            HTTP.newCall(request).enqueue(new okhttp3.Callback() {
+                @Override public void onFailure(Call call, IOException error) {
+                    MAIN.post(() -> callback.onError("Could not reach payment server."));
+                }
+
+                @Override public void onResponse(Call call, Response response) {
+                    try (Response bodyResponse = response) {
+                        String body = bodyResponse.body() == null ? "" : bodyResponse.body().string();
+                        if (!response.isSuccessful()) {
+                            MAIN.post(() -> callback.onError(readServerError(body, response.code())));
+                            return;
+                        }
+                        String status = new JSONObject(body).optString("status", "pending");
+                        MAIN.post(() -> callback.onResult(status));
+                    } catch (Exception error) {
+                        MAIN.post(() -> callback.onError("Invalid response from backend."));
+                    }
+                }
+            });
+        } catch (Exception error) {
+            callback.onError("Could not verify order.");
         }
     }
 

@@ -1,4 +1,4 @@
 # app/local.properties is also supported and overrides the root file.
 # This URL is safe to ship in the APK. The ZapUPI key must stay on Render.
-backend.base.url=https://starx24-backend.onrender.com
+backend.base.url=https://starx24-backend-1.onrender.com
 remote.maintenance.enabled=false

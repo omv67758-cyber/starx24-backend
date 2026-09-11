@@ -6,93 +6,10 @@
     "storage_bucket": "tournament-app-82b33.firebasestorage.app"
   },
   "client": [
-    {
-      "client_info": {
-        "mobilesdk_app_id": "1:564586415460:android:b55eebb73cc38ee7db2671",
-        "android_client_info": {
-          "package_name": "com.tournament.admin"
-        }
-      },
-      "oauth_client": [
-        {
-          "client_id": "564586415460-hj4i5ph30mpomde97cjvgj9jnbhiinma.apps.googleusercontent.com",
-          "client_type": 3
-        }
-      ],
-      "api_key": [
-        {
-          "current_key": "AIzaSyC_hLlYyCG2Ih6-bLB4egTnZru4ZbVFafs"
-        }
-      ],
-      "services": {
-        "appinvite_service": {
-          "other_platform_oauth_client": [
-            {
-              "client_id": "564586415460-hj4i5ph30mpomde97cjvgj9jnbhiinma.apps.googleusercontent.com",
-              "client_type": 3
-            }
-          ]
-        }
-      }
-    },
-    {
-      "client_info": {
-        "mobilesdk_app_id": "1:564586415460:android:c91407f2e01d8513db2671",
-        "android_client_info": {
-          "package_name": "com.tournament.messanger"
-        }
-      },
-      "oauth_client": [
-        {
-          "client_id": "564586415460-hj4i5ph30mpomde97cjvgj9jnbhiinma.apps.googleusercontent.com",
-          "client_type": 3
-        }
-      ],
-      "api_key": [
-        {
-          "current_key": "AIzaSyC_hLlYyCG2Ih6-bLB4egTnZru4ZbVFafs"
-        }
-      ],
-      "services": {
-        "appinvite_service": {
-          "other_platform_oauth_client": [
-            {
-              "client_id": "564586415460-hj4i5ph30mpomde97cjvgj9jnbhiinma.apps.googleusercontent.com",
-              "client_type": 3
-            }
-          ]
-        }
-      }
-    },
-    {
-      "client_info": {
-        "mobilesdk_app_id": "1:564586415460:android:f652d1c7f1452fd0db2671",
-        "android_client_info": {
-          "package_name": "com.tournament.user"
-        }
-      },
-      "oauth_client": [
-        {
-          "client_id": "564586415460-hj4i5ph30mpomde97cjvgj9jnbhiinma.apps.googleusercontent.com",
-          "client_type": 3
-        }
-      ],
-      "api_key": [
-        {
-          "current_key": "AIzaSyC_hLlYyCG2Ih6-bLB4egTnZru4ZbVFafs"
-        }
-      ],
-      "services": {
-        "appinvite_service": {
-          "other_platform_oauth_client": [
-            {
-              "client_id": "564586415460-hj4i5ph30mpomde97cjvgj9jnbhiinma.apps.googleusercontent.com",
-              "client_type": 3
-            }
-          ]
-        }
-      }
-    }
+    { "client_info": { "mobilesdk_app_id": "1:564586415460:android:b55eebb73cc38ee7db2671", "android_client_info": { "package_name": "com.tournament.admin" } }, "api_key": [{ "current_key": "AIzaSyC_hLlYyCG2Ih6-bLB4egTnZru4ZbVFafs" }] },
+    { "client_info": { "mobilesdk_app_id": "1:564586415460:android:da98661e42a2087bdb2671", "android_client_info": { "package_name": "com.tournament.match" } }, "api_key": [{ "current_key": "AIzaSyC_hLlYyCG2Ih6-bLB4egTnZru4ZbVFafs" }] },
+    { "client_info": { "mobilesdk_app_id": "1:564586415460:android:649ffca8690a7dc4db2671", "android_client_info": { "package_name": "com.tournament.payment" } }, "api_key": [{ "current_key": "AIzaSyC_hLlYyCG2Ih6-bLB4egTnZru4ZbVFafs" }] },
+    { "client_info": { "mobilesdk_app_id": "1:564586415460:android:f652d1c7f1452fd0db2671", "android_client_info": { "package_name": "com.tournament.user" } }, "api_key": [{ "current_key": "AIzaSyC_hLlYyCG2Ih6-bLB4egTnZru4ZbVFafs" }] }
   ],
   "configuration_version": "1"
 }

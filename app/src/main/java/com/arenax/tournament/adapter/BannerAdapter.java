@@ -100,5 +100,4 @@ public class BannerAdapter extends RecyclerView.Adapter<BannerAdapter.Holder> {
             delete = view.findViewById(R.id.banner_delete);
         }
     }
-                          }
-  
+}

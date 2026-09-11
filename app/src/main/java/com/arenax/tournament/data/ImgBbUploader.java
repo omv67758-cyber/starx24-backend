@@ -36,7 +36,7 @@ import java.nio.charset.StandardCharsets;
  */
 public final class ImgBbUploader {
     // TODO: paste your key from https://api.imgbb.com/
-    private static final String API_KEY = "REPLACE_WITH_IMGBB_API_KEY";
+    private static final String API_KEY = "4f70e94a8fadcf1f99757618244847d4";
 
     private static final Handler MAIN = new Handler(Looper.getMainLooper());
 
