@@ -447,6 +447,90 @@ async function processCoinApprovals() {
   }
 }
 
+// Paid tournament registration. The client never writes wallet balances directly:
+// this endpoint verifies the Firebase session, checks the server-side entry fee,
+// atomically reserves the selected slot and debits wallet.balance exactly once.
+app.post("/joinMatch", async (req, res) => {
+  const idToken = getBearerToken(req);
+  if (!idToken) return res.status(401).json({ error: "Missing Firebase authorization token" });
+  let decoded;
+  try {
+    decoded = await admin.auth().verifyIdToken(idToken);
+  } catch (_error) {
+    return res.status(401).json({ error: "Invalid Firebase authorization token" });
+  }
+
+  const tournamentId = String(req.body?.tournamentId || "").trim();
+  const slotNumber = Number(req.body?.slotNumber);
+  const gameUid = String(req.body?.gameUid || "").trim();
+  const gameName = String(req.body?.gameName || "").trim();
+  if (!tournamentId || !Number.isInteger(slotNumber) || slotNumber < 1 || slotNumber > 48 || !gameUid || !gameName) {
+    return res.status(400).json({ error: "Complete match and game details are required" });
+  }
+
+  const participantRef = db.ref(`tournaments/${tournamentId}/participants/${decoded.uid}`);
+  const slotRef = db.ref(`tournaments/${tournamentId}/slotIndex/${slotNumber}`);
+  const walletRef = db.ref(`users/${decoded.uid}/wallet`);
+  let debitedAmount = 0;
+  try {
+    const [tournamentSnapshot, existing] = await Promise.all([
+      db.ref(`tournaments/${tournamentId}`).once("value"),
+      participantRef.once("value"),
+    ]);
+    if (!tournamentSnapshot.exists()) return res.status(404).json({ error: "Match not found" });
+    if (existing.exists()) return res.status(200).json({ status: "already_registered" });
+    const tournament = tournamentSnapshot.val() || {};
+    if (String(tournament.status || "").toUpperCase() === "COMPLETED" || String(tournament.registrationStatus || "OPEN").toUpperCase() !== "OPEN" || tournament.active === false) {
+      return res.status(409).json({ error: "Registration is closed for this match" });
+    }
+    if (slotNumber > Math.max(1, Number(tournament.totalSlots || 48))) {
+      return res.status(409).json({ error: "That slot is not available for this match" });
+    }
+    const entryFee = Math.max(0, Number(tournament.entryFeeCoins || 0));
+    const slotClaim = await slotRef.transaction((current) => current == null ? decoded.uid : undefined);
+    if (!slotClaim.committed) return res.status(409).json({ error: "That slot is already taken" });
+
+    if (entryFee > 0) {
+      const debit = await walletRef.transaction((current) => {
+        const wallet = current && typeof current === "object" ? { ...current } : {};
+        const balance = Number(wallet.balance || 0);
+        if (!Number.isFinite(balance) || balance < entryFee) return;
+        wallet.balance = balance - entryFee;
+        return wallet;
+      });
+      if (!debit.committed) {
+        await slotRef.transaction((current) => current === decoded.uid ? null : undefined);
+        return res.status(409).json({ error: `You need ${entryFee} coins to join this match` });
+      }
+      debitedAmount = entryFee;
+    }
+
+    const participant = { userId: decoded.uid, teamName: "", teamSize: Number(tournament.teamSize || 1), slotNumber, gameUid, gameName, entryFeeCoins: entryFee, entryStatus: entryFee > 0 ? "PAID" : "FREE", status: "REGISTERED", createdAt: admin.database.ServerValue.TIMESTAMP };
+    const updates = {};
+    updates[`tournaments/${tournamentId}/participants/${decoded.uid}`] = participant;
+    updates[`matches/${tournamentId}/joinedUsers/${decoded.uid}`] = participant;
+    updates[`matches/${tournamentId}/participants/${decoded.uid}`] = participant;
+    updates[`users/${decoded.uid}/lastGameName`] = gameName;
+    if (entryFee > 0) {
+      const txId = `entry_${tournamentId}_${decoded.uid}`;
+      updates[`users/${decoded.uid}/wallet/transactions/${txId}`] = { type: "MATCH_ENTRY", tournamentId, amount: -entryFee, description: `Entry fee • ${String(tournament.title || "Match")}`, createdAt: admin.database.ServerValue.TIMESTAMP };
+    }
+    await db.ref().update(updates);
+    return res.status(200).json({ status: "registered", entryFeeCoins: entryFee });
+  } catch (error) {
+    if (debitedAmount > 0) {
+      await walletRef.transaction((current) => {
+        const wallet = current && typeof current === "object" ? { ...current } : {};
+        wallet.balance = Number(wallet.balance || 0) + debitedAmount;
+        return wallet;
+      }).catch(() => {});
+      await slotRef.transaction((current) => current === decoded.uid ? null : undefined).catch(() => {});
+    }
+    console.error("joinMatch error", error.message);
+    return res.status(500).json({ error: "Could not complete match registration" });
+  }
+});
+
 app.post("/zapupiWebhook", async (req, res) => {
   const orderId = req.body?.order_id || req.body?.data?.order_id;
   if (!orderId) return res.status(200).send("ok");
