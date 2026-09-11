@@ -247,7 +247,10 @@ async function settleOrder(orderId, storedOrder) {
   if (storedOrder.status === "failed") return "failed";
 
   const statusData = await getVerifiedOrderStatus(orderId);
-  const verifiedStatus = String(statusData?.status || statusData?.data?.status || "").trim().toLowerCase();
+  // ZapUPI returns an outer API status of "success" when the status lookup
+  // itself succeeded. That is NOT the payment result. The actual transaction
+  // result is statusData.data.status (Pending | Success | Failed).
+  const verifiedStatus = String(statusData?.data?.status || "").trim().toLowerCase();
 
   if (verifiedStatus === "success") {
     const order = { ...storedOrder, orderId };
