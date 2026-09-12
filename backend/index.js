@@ -12,6 +12,7 @@
 
 const express = require("express");
 const admin = require("firebase-admin");
+const rateLimit = require("express-rate-limit");
 const { randomBytes } = require("node:crypto");
 
 function readServiceAccount() {
@@ -49,6 +50,11 @@ const zapupiKey = process.env.ZAPUPI_KEY?.trim();
 const zapupiMode = (process.env.ZAPUPI_MODE || "TEST").trim().toUpperCase();
 const publicBaseUrl = (process.env.PUBLIC_BASE_URL?.trim()
   || process.env.RENDER_EXTERNAL_URL?.trim())?.replace(/\/+$/, "");
+// Same bootstrap master identity the Firebase rules and the Android app's
+// admin_keys/admin_sessions RBAC already trust. Keeping this in sync with
+// database.rules.json means the owner's Gmail account works as MASTER_ADMIN
+// here too, without introducing a second (custom-claims) admin system.
+const MASTER_EMAIL = (process.env.MASTER_EMAIL || "fflueclark@gmail.com").trim().toLowerCase();
 
 if (!zapupiKey) throw new Error("Missing ZAPUPI_KEY");
 if (!publicBaseUrl) throw new Error("Missing PUBLIC_BASE_URL");
@@ -78,6 +84,72 @@ app.get("/health", (_req, res) => {
 function getBearerToken(req) {
   const header = req.headers.authorization || "";
   return header.startsWith("Bearer ") ? header.slice(7).trim() : "";
+}
+
+// Applied per-uid (falls back to IP if the token is missing/invalid — the
+// route handler still rejects those) so one abusive account can't hammer
+// money-moving endpoints. 20 requests/minute is generous for a real user
+// tapping buttons and tight enough to stop scripted abuse.
+const moneyLimiter = rateLimit({
+  windowMs: 60_000,
+  limit: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => getBearerToken(req) || req.ip,
+  message: { error: "Too many requests. Please wait a moment and try again." },
+});
+
+/**
+ * Resolves the caller's admin role using the SAME admin_keys/admin_sessions
+ * lookup the Android app and database.rules.json already use, instead of a
+ * separate custom-claims system. Reading with the Admin SDK bypasses rules,
+ * so this always sees the live value.
+ */
+async function resolveAdminRole(uid, email) {
+  if (email && email.trim().toLowerCase() === MASTER_EMAIL) {
+    return { role: "MASTER_ADMIN", active: true };
+  }
+  const sessionKey = (await db.ref(`admin_sessions/${uid}/key`).once("value")).val();
+  if (!sessionKey) return { role: null, active: false };
+  const record = (await db.ref(`admin_keys/${sessionKey}`).once("value")).val();
+  if (!record || record.active !== true) return { role: null, active: false };
+  return { role: String(record.role || ""), active: true };
+}
+
+function isMasterOrPayment(role) {
+  return role === "MASTER_ADMIN" || role === "SUPER_ADMIN" || role === "PAYMENT_ADMIN";
+}
+
+/** Express middleware: verifies the Firebase session AND that the caller is
+ *  an active admin whose role passes `allow(role)`. Sets req.decoded / req.adminRole. */
+function requireAdmin(allow) {
+  return async (req, res, next) => {
+    const idToken = getBearerToken(req);
+    if (!idToken) return res.status(401).json({ error: "Missing Firebase authorization token" });
+    let decoded;
+    try {
+      decoded = await admin.auth().verifyIdToken(idToken);
+    } catch (_error) {
+      return res.status(401).json({ error: "Invalid Firebase authorization token" });
+    }
+    const { role, active } = await resolveAdminRole(decoded.uid, decoded.email);
+    if (!active || !allow(role)) {
+      return res.status(403).json({ error: "You do not have permission to do this" });
+    }
+    req.decoded = decoded;
+    req.adminRole = role;
+    next();
+  };
+}
+
+/** Every admin money/result action gets one line here — who, what, on whom. */
+async function logActivity(actorUid, action, details) {
+  await db.ref("activity_logs").push({
+    actorUid,
+    action,
+    details: details || "",
+    at: admin.database.ServerValue.TIMESTAMP,
+  }).catch((error) => console.error("activity log write failed", error.message));
 }
 
 function validOrderId(orderId) {
@@ -123,7 +195,7 @@ function paymentProviderError(data, statusCode) {
   return "Payment provider rejected the order. Please try again.";
 }
 
-app.post("/createOrder", async (req, res) => {
+app.post("/createOrder", moneyLimiter, async (req, res) => {
   const idToken = getBearerToken(req);
   if (!idToken) return res.status(401).json({ error: "Missing Firebase authorization token" });
 
@@ -450,7 +522,7 @@ async function processCoinApprovals() {
 // Paid tournament registration. The client never writes wallet balances directly:
 // this endpoint verifies the Firebase session, checks the server-side entry fee,
 // atomically reserves the selected slot and debits wallet.balance exactly once.
-app.post("/joinMatch", async (req, res) => {
+app.post("/joinMatch", moneyLimiter, async (req, res) => {
   const idToken = getBearerToken(req);
   if (!idToken) return res.status(401).json({ error: "Missing Firebase authorization token" });
   let decoded;
@@ -460,36 +532,181 @@ app.post("/joinMatch", async (req, res) => {
     return res.status(401).json({ error: "Invalid Firebase authorization token" });
   }
 
+  // The maintenance switch used to only pop a dialog on the client — it never
+  // stopped this endpoint, so users could still join (and get charged) while
+  // the admin thought access was paused. Enforce it here, server-side.
+  try {
+    const maintenanceSnapshot = await db.ref("appConfig/maintenance").once("value");
+    if (maintenanceSnapshot.val() === true) {
+      return res.status(503).json({ error: "STARX24 is under maintenance. Please check back soon." });
+    }
+  } catch (_error) {
+    // If the maintenance flag can't be read, fail open rather than blocking joins.
+  }
+
   const tournamentId = String(req.body?.tournamentId || "").trim();
-  const slotNumber = Number(req.body?.slotNumber);
+  // A26 — the client used to fetch a snapshot of free slots, show them in a
+  // spinner, and send back whichever one the player picked. If someone else
+  // grabbed that same slot in the seconds between opening the dialog and
+  // tapping JOIN, the join failed with "That slot is already taken" even
+  // though other slots were free — a race baked into a manual pick from a
+  // stale list. The client no longer sends a slot number at all: the server
+  // now auto-assigns the next open slot atomically and hands the player that
+  // slot number back in the response, so the slot is decided (and shown)
+  // AFTER a successful join, never guessed at beforehand.
+  const rawSlotNumber = req.body?.slotNumber;
+  const requestedSlot = Number(rawSlotNumber);
+  const hasRequestedSlot = rawSlotNumber !== undefined && rawSlotNumber !== null && rawSlotNumber !== ""
+    && Number.isInteger(requestedSlot) && requestedSlot > 0;
+
+  // Multi-slot join: a player can now grab more than one slot in the same
+  // request (e.g. to play with a friend's account, or just to hedge kills
+  // across two entries). "slotNumbers" is an optional array of the specific
+  // slots the player tapped; if it's missing we fall back to the single
+  // "slotNumber"/auto-assign behaviour below with a quantity of 1. Either
+  // way the entry fee charged is per-slot × how many slots are claimed —
+  // never a flat fee — so a 2-slot join always costs exactly double.
+  const MAX_SLOTS_PER_JOIN = 4;
+  let requestedSlots = [];
+  if (Array.isArray(req.body?.slotNumbers)) {
+    const seen = new Set();
+    for (const raw of req.body.slotNumbers) {
+      const n = Number(raw);
+      if (Number.isInteger(n) && n > 0 && !seen.has(n)) { seen.add(n); requestedSlots.push(n); }
+    }
+  } else if (hasRequestedSlot) {
+    requestedSlots = [requestedSlot];
+  }
+  const requestedQuantity = Number(req.body?.quantity);
+  // quantity-only requests (no specific slots picked) ask the server to
+  // auto-assign that many free slots, same as the existing single-slot
+  // auto-assign path just repeated.
+  const quantity = requestedSlots.length > 0
+    ? requestedSlots.length
+    : (Number.isInteger(requestedQuantity) && requestedQuantity > 0 ? requestedQuantity : 1);
+
   const gameUid = String(req.body?.gameUid || "").trim();
   const gameName = String(req.body?.gameName || "").trim();
-  if (!tournamentId || !Number.isInteger(slotNumber) || slotNumber < 1 || slotNumber > 48 || !gameUid || !gameName) {
+
+  // Per-slot player details: a Duo/Squad team (or any multi-slot join) needs
+  // a Game UID + Game Name for EACH slot, not one shared pair — the players
+  // sitting in slot 2 and slot 7 are different people. "players" is an
+  // optional array of {slotNumber, gameUid, gameName}, one entry per
+  // requested slot. When it's present it must fully cover every requested
+  // slot; the flat gameUid/gameName above stays as the single-slot fallback
+  // so a plain 1-slot join keeps working unchanged.
+  const rawPlayers = Array.isArray(req.body?.players) ? req.body.players : [];
+  const playersBySlot = new Map();
+  for (const entry of rawPlayers) {
+    const slot = Number(entry?.slotNumber);
+    const uid = String(entry?.gameUid || "").trim();
+    const name = String(entry?.gameName || "").trim();
+    if (Number.isInteger(slot) && slot > 0 && uid && name) playersBySlot.set(slot, { gameUid: uid, gameName: name });
+  }
+  const usingPerSlotPlayers = playersBySlot.size > 0;
+  if (usingPerSlotPlayers && requestedSlots.length === 0) {
+    return res.status(400).json({ error: "Select specific slots when providing per-player details" });
+  }
+  if (usingPerSlotPlayers && !requestedSlots.every((slot) => playersBySlot.has(slot))) {
+    return res.status(400).json({ error: "Enter the Game UID and Game Name for every selected slot" });
+  }
+
+  if (!tournamentId || requestedSlots.some((n) => n > 48) || (!usingPerSlotPlayers && (!gameUid || !gameName))) {
     return res.status(400).json({ error: "Complete match and game details are required" });
+  }
+  if (quantity > MAX_SLOTS_PER_JOIN) {
+    return res.status(400).json({ error: `You can join with at most ${MAX_SLOTS_PER_JOIN} slots at a time` });
   }
 
   const participantRef = db.ref(`tournaments/${tournamentId}/participants/${decoded.uid}`);
-  const slotRef = db.ref(`tournaments/${tournamentId}/slotIndex/${slotNumber}`);
   const walletRef = db.ref(`users/${decoded.uid}/wallet`);
   let debitedAmount = 0;
+  let reserved = false;
+  const claimedSlotRefs = [];
   try {
-    const [tournamentSnapshot, existing] = await Promise.all([
-      db.ref(`tournaments/${tournamentId}`).once("value"),
-      participantRef.once("value"),
-    ]);
+    const tournamentSnapshot = await db.ref(`tournaments/${tournamentId}`).once("value");
     if (!tournamentSnapshot.exists()) return res.status(404).json({ error: "Match not found" });
-    if (existing.exists()) return res.status(200).json({ status: "already_registered" });
     const tournament = tournamentSnapshot.val() || {};
     if (String(tournament.status || "").toUpperCase() === "COMPLETED" || String(tournament.registrationStatus || "OPEN").toUpperCase() !== "OPEN" || tournament.active === false) {
       return res.status(409).json({ error: "Registration is closed for this match" });
     }
-    if (slotNumber > Math.max(1, Number(tournament.totalSlots || 48))) {
+    const totalSlots = Math.max(1, Number(tournament.totalSlots || 48));
+    if (requestedSlots.some((n) => n > totalSlots)) {
       return res.status(409).json({ error: "That slot is not available for this match" });
     }
-    const entryFee = Math.max(0, Number(tournament.entryFeeCoins || 0));
-    const slotClaim = await slotRef.transaction((current) => current == null ? decoded.uid : undefined);
-    if (!slotClaim.committed) return res.status(409).json({ error: "That slot is already taken" });
+    const remainingSlots = totalSlots - Math.max(0, Number(tournament.joinedSlots || 0));
+    if (quantity > Math.max(0, remainingSlots)) {
+      return res.status(409).json({ error: remainingSlots <= 0 ? "This match is full" : `Only ${remainingSlots} slot(s) left` });
+    }
+    // Duo/Squad matches reserve their slots as a fixed-size team, not a
+    // pick-your-own quantity: a Duo join must claim exactly 2 slots (one
+    // per teammate), a Squad join exactly 4, etc. This is enforced here
+    // (not just in the client's dialog) so a join request can't slip in
+    // with fewer paid entries than the team actually needs.
+    const teamSize = Math.max(1, Number(tournament.teamSize || 1));
+    if (teamSize > 1 && quantity !== teamSize) {
+      return res.status(400).json({ error: `This is a ${teamSize}-player team match — select exactly ${teamSize} slots` });
+    }
 
+    // Reserve this user's registration FIRST, atomically. The old code checked
+    // "already registered" with a plain .once("value") read and only wrote the
+    // participant record much later — if two requests landed close together
+    // (double-tap on the join button, a retried network call, the same account
+    // open on two devices) both could pass that read before either write
+    // finished, then both claim a slot and both debit the wallet for what was
+    // meant to be a single entry. A transaction on participantRef is how
+    // Firebase guarantees only one concurrent request can "win" — every other
+    // one is told already_registered before any coins move.
+    const reservation = await participantRef.transaction((current) =>
+      current == null ? { userId: decoded.uid, status: "RESERVING" } : undefined);
+    if (!reservation.committed) {
+      return res.status(200).json({ status: "already_registered" });
+    }
+    reserved = true;
+
+    const perSlotFee = Math.max(0, Number(tournament.entryFeeCoins || 0));
+
+    const claimedSlotNumbers = [];
+    if (requestedSlots.length > 0) {
+      // Specific slots picked by the player — claim every one of them, in
+      // order. If any single slot in the batch is already taken, unwind
+      // every slot claimed earlier in this same request before failing, so
+      // a rejected multi-slot join never leaves the player holding a partial
+      // set of slots they didn't ask to keep.
+      for (const requested of requestedSlots) {
+        const slotRef = db.ref(`tournaments/${tournamentId}/slotIndex/${requested}`);
+        const slotClaim = await slotRef.transaction((current) => current == null ? decoded.uid : undefined);
+        if (!slotClaim.committed) {
+          for (const ref of claimedSlotRefs) await ref.transaction((current) => current === decoded.uid ? null : undefined).catch(() => {});
+          await participantRef.remove().catch(() => {});
+          return res.status(409).json({ error: `Slot ${requested} is already taken` });
+        }
+        claimedSlotRefs.push(slotRef);
+        claimedSlotNumbers.push(requested);
+      }
+    } else {
+      // Auto-assign: walk the slots in order and atomically claim the first
+      // `quantity` free ones. Each transaction only succeeds for whichever
+      // request gets there first, so simultaneous joins never collide on
+      // the same slot, and a quantity > 1 just repeats the claim.
+      for (let candidate = 1; candidate <= totalSlots && claimedSlotNumbers.length < quantity; candidate++) {
+        const candidateRef = db.ref(`tournaments/${tournamentId}/slotIndex/${candidate}`);
+        const attempt = await candidateRef.transaction((current) => current == null ? decoded.uid : undefined);
+        if (attempt.committed) {
+          claimedSlotNumbers.push(candidate);
+          claimedSlotRefs.push(candidateRef);
+        }
+      }
+      if (claimedSlotNumbers.length < quantity) {
+        for (const ref of claimedSlotRefs) await ref.transaction((current) => current === decoded.uid ? null : undefined).catch(() => {});
+        await participantRef.remove().catch(() => {});
+        return res.status(409).json({ error: "This match is full" });
+      }
+    }
+
+    // Entry fee is always per-slot × how many slots were actually claimed —
+    // a 2-slot join costs exactly double a 1-slot join, never a flat rate.
+    const entryFee = perSlotFee * claimedSlotNumbers.length;
     if (entryFee > 0) {
       const debit = await walletRef.transaction((current) => {
         const wallet = current && typeof current === "object" ? { ...current } : {};
@@ -499,24 +716,69 @@ app.post("/joinMatch", async (req, res) => {
         return wallet;
       });
       if (!debit.committed) {
-        await slotRef.transaction((current) => current === decoded.uid ? null : undefined);
-        return res.status(409).json({ error: `You need ${entryFee} coins to join this match` });
+        for (const ref of claimedSlotRefs) await ref.transaction((current) => current === decoded.uid ? null : undefined).catch(() => {});
+        await participantRef.remove().catch(() => {});
+        return res.status(409).json({ error: `You need ${entryFee} coins to join with ${claimedSlotNumbers.length} slot(s)` });
       }
       debitedAmount = entryFee;
     }
 
-    const participant = { userId: decoded.uid, teamName: "", teamSize: Number(tournament.teamSize || 1), slotNumber, gameUid, gameName, entryFeeCoins: entryFee, entryStatus: entryFee > 0 ? "PAID" : "FREE", status: "REGISTERED", createdAt: admin.database.ServerValue.TIMESTAMP };
+    const slotNumber = claimedSlotNumbers[0];
+    // When per-slot players were provided, each claimed slot gets its own
+    // {slotNumber, gameUid, gameName} entry (built from the map keyed by the
+    // ORIGINAL requested slot numbers, which is safe here — usingPerSlotPlayers
+    // only applies to the explicit-slots path, so claimedSlotNumbers is exactly
+    // requestedSlots, just re-confirmed as actually claimed). The top-level
+    // gameUid/gameName still mirror the first slot's player for any older
+    // screen that only reads the flat fields.
+    const slotPlayers = usingPerSlotPlayers
+      ? claimedSlotNumbers.map((slot) => ({ slotNumber: slot, ...playersBySlot.get(slot) }))
+      : null;
+    const primaryPlayer = usingPerSlotPlayers ? playersBySlot.get(slotNumber) : { gameUid, gameName };
+    const participant = {
+      userId: decoded.uid, teamName: "", teamSize: Number(tournament.teamSize || 1),
+      slotNumber, slotNumbers: claimedSlotNumbers,
+      gameUid: primaryPlayer.gameUid, gameName: primaryPlayer.gameName,
+      entryFeeCoins: entryFee, entryStatus: entryFee > 0 ? "PAID" : "FREE",
+      status: "REGISTERED", createdAt: admin.database.ServerValue.TIMESTAMP,
+    };
+    if (slotPlayers) participant.players = slotPlayers;
     const updates = {};
     updates[`tournaments/${tournamentId}/participants/${decoded.uid}`] = participant;
+    // joinedSlots used to only be set by hand in the admin panel and was never
+    // touched here, so the "remaining slots" / FULL badge the app computes from
+    // totalSlots - joinedSlots drifted from the real slotIndex claims (could
+    // show FULL with open slots, or show open slots that were actually taken).
+    // Increment it atomically as part of this same real-registration write —
+    // by the full slot count, so a multi-slot join advances the fill bar the
+    // same amount a matching number of single-slot joins would.
+    updates[`tournaments/${tournamentId}/joinedSlots`] = admin.database.ServerValue.increment(claimedSlotNumbers.length);
     updates[`matches/${tournamentId}/joinedUsers/${decoded.uid}`] = participant;
     updates[`matches/${tournamentId}/participants/${decoded.uid}`] = participant;
-    updates[`users/${decoded.uid}/lastGameName`] = gameName;
+    updates[`users/${decoded.uid}/lastGameName`] = primaryPlayer.gameName;
     if (entryFee > 0) {
       const txId = `entry_${tournamentId}_${decoded.uid}`;
-      updates[`users/${decoded.uid}/wallet/transactions/${txId}`] = { type: "MATCH_ENTRY", tournamentId, amount: -entryFee, description: `Entry fee • ${String(tournament.title || "Match")}`, createdAt: admin.database.ServerValue.TIMESTAMP };
+      // Match the Transaction model's fields exactly (type/title/amount/timestamp/status),
+      // the same way creditWalletOnce() does for top-ups. The previous version wrote
+      // type: "MATCH_ENTRY" (not a value of the app's Transaction.Type enum) and left out
+      // "status" entirely — the app's transactionFromLedger() silently drops any record
+      // it can't parse, so every entry-fee deduction was invisible in Wallet history even
+      // though the coins really were debited.
+      const slotLabel = claimedSlotNumbers.length > 1 ? ` × ${claimedSlotNumbers.length} slots` : "";
+      updates[`users/${decoded.uid}/wallet/transactions/${txId}`] = {
+        type: "CONTEST_ENTRY",
+        title: `Entry fee • ${String(tournament.title || "Match")}${slotLabel}`,
+        amount: entryFee,
+        timestamp: admin.database.ServerValue.TIMESTAMP,
+        status: "SUCCESS",
+      };
     }
     await db.ref().update(updates);
-    return res.status(200).json({ status: "registered", entryFeeCoins: entryFee });
+    // Slot numbers are only known for certain once every claim transaction
+    // above has committed, so this is the first point the player can be
+    // told which slot(s) they're in — the client shows it after this
+    // response comes back, not before.
+    return res.status(200).json({ status: "registered", entryFeeCoins: entryFee, slotNumber, slotNumbers: claimedSlotNumbers });
   } catch (error) {
     if (debitedAmount > 0) {
       await walletRef.transaction((current) => {
@@ -524,8 +786,9 @@ app.post("/joinMatch", async (req, res) => {
         wallet.balance = Number(wallet.balance || 0) + debitedAmount;
         return wallet;
       }).catch(() => {});
-      await slotRef.transaction((current) => current === decoded.uid ? null : undefined).catch(() => {});
     }
+    for (const ref of claimedSlotRefs) await ref.transaction((current) => current === decoded.uid ? null : undefined).catch(() => {});
+    if (reserved) await participantRef.remove().catch(() => {});
     console.error("joinMatch error", error.message);
     return res.status(500).json({ error: "Could not complete match registration" });
   }
@@ -589,6 +852,234 @@ app.post("/verifyOrder", async (req, res) => {
   }
 });
 
+function validAmount(value, min, max) {
+  return Number.isInteger(value) && value >= min && value <= max;
+}
+
+function validUpiId(value) {
+  return typeof value === "string" && /^[a-zA-Z0-9.\-_]{2,256}@[a-zA-Z]{2,64}$/.test(value.trim());
+}
+
+// User requests a payout. The client never touches wallet.locked or
+// wallet.balance directly — this is now the only path that can move a
+// withdrawal amount out of a user's spendable balance, matching the rules'
+// users/$uid/wallet write restriction to RESULTS_COINS_ADMIN/MASTER_ADMIN
+// (this endpoint uses the Admin SDK, which bypasses rules entirely).
+app.post("/requestWithdrawal", moneyLimiter, async (req, res) => {
+  const idToken = getBearerToken(req);
+  if (!idToken) return res.status(401).json({ error: "Missing Firebase authorization token" });
+  let decoded;
+  try {
+    decoded = await admin.auth().verifyIdToken(idToken);
+  } catch (_error) {
+    return res.status(401).json({ error: "Invalid Firebase authorization token" });
+  }
+
+  const amount = Number(req.body?.amount);
+  if (!validAmount(amount, 50, 100000)) {
+    return res.status(400).json({ error: "Withdrawal amount must be between 50 and 100000 coins" });
+  }
+  const upiId = String(req.body?.upiId || "").trim();
+  if (!validUpiId(upiId)) {
+    return res.status(400).json({ error: "Enter a valid UPI ID (e.g. name@bank)" });
+  }
+
+  const uid = decoded.uid;
+  let locked = false;
+  try {
+    // One pending request at a time — otherwise a user could fire several
+    // requests before any is resolved and lock more coins than they hold.
+    const existing = await db.ref("withdrawals").orderByChild("userId").equalTo(uid).once("value");
+    let hasPending = false;
+    existing.forEach((child) => { if (child.child("status").val() === "PENDING") hasPending = true; });
+    if (hasPending) {
+      return res.status(409).json({ error: "You already have a withdrawal request pending" });
+    }
+
+    const walletRef = db.ref(`users/${uid}/wallet`);
+    const debit = await walletRef.transaction((current) => {
+      const wallet = current && typeof current === "object" ? { ...current } : {};
+      const balance = Number(wallet.balance || 0);
+      if (!Number.isFinite(balance) || balance < amount) return;
+      wallet.balance = balance - amount;
+      wallet.locked = Number(wallet.locked || 0) + amount;
+      return wallet;
+    });
+    if (!debit.committed) {
+      return res.status(409).json({ error: `You need ${amount} coins available to request this withdrawal` });
+    }
+    locked = true;
+
+    const withdrawalId = db.ref("withdrawals").push().key;
+    const txId = `withdrawal_${withdrawalId}`;
+    const record = {
+      userId: uid, amount, upiId, status: "PENDING",
+      walletTxId: txId, createdAt: admin.database.ServerValue.TIMESTAMP,
+    };
+    await db.ref().update({
+      [`withdrawals/${withdrawalId}`]: record,
+      // Mirror under the user's own subtree so the app can show "my
+      // withdrawals" for a normal user, who otherwise has no permission to
+      // list the top-level withdrawals node (that's admin-only in the rules).
+      [`users/${uid}/withdrawals/${withdrawalId}`]: record,
+      [`users/${uid}/wallet/transactions/${txId}`]: {
+        type: "WITHDRAWAL", title: `Withdrawal to ${upiId}`, amount,
+        timestamp: admin.database.ServerValue.TIMESTAMP, status: "PENDING",
+      },
+    });
+    await logActivity(uid, "WITHDRAWAL_REQUESTED", `${withdrawalId} • ${amount} coins`);
+    return res.status(200).json({ withdrawalId, status: "PENDING" });
+  } catch (error) {
+    if (locked) {
+      await db.ref(`users/${uid}/wallet`).transaction((current) => {
+        const wallet = current && typeof current === "object" ? { ...current } : {};
+        wallet.balance = Number(wallet.balance || 0) + amount;
+        wallet.locked = Math.max(0, Number(wallet.locked || 0) - amount);
+        return wallet;
+      }).catch(() => {});
+    }
+    console.error("requestWithdrawal error", error.message);
+    return res.status(500).json({ error: "Could not submit withdrawal request" });
+  }
+});
+
+// Admin resolves a pending withdrawal. Replaces the old direct
+// FirebaseRepository.updateWithdrawalStatus() client write, which only
+// flipped the status string and never actually moved the locked coins.
+app.post("/admin/approveWithdrawal", requireAdmin(isMasterOrPayment), async (req, res) => {
+  const withdrawalId = String(req.body?.withdrawalId || "").trim();
+  const action = String(req.body?.action || "").trim().toUpperCase();
+  if (!withdrawalId || (action !== "PAID" && action !== "REJECTED")) {
+    return res.status(400).json({ error: "withdrawalId and action ('PAID' or 'REJECTED') are required" });
+  }
+
+  try {
+    const snapshot = await db.ref(`withdrawals/${withdrawalId}`).once("value");
+    const withdrawal = snapshot.val();
+    if (!withdrawal) return res.status(404).json({ error: "Withdrawal not found" });
+
+    // Transaction guard so two admins tapping at once can't both resolve it.
+    const claim = await db.ref(`withdrawals/${withdrawalId}/status`)
+      .transaction((current) => current === "PENDING" ? "PROCESSING" : undefined);
+    if (!claim.committed) {
+      return res.status(409).json({ error: "This withdrawal was already resolved" });
+    }
+
+    const { userId, amount, walletTxId } = withdrawal;
+    await db.ref(`users/${userId}/wallet`).transaction((current) => {
+      const wallet = current && typeof current === "object" ? { ...current } : {};
+      wallet.locked = Math.max(0, Number(wallet.locked || 0) - Number(amount));
+      if (action === "REJECTED") wallet.balance = Number(wallet.balance || 0) + Number(amount);
+      return wallet;
+    });
+
+    const updates = {
+      [`withdrawals/${withdrawalId}/status`]: action,
+      [`withdrawals/${withdrawalId}/resolvedAt`]: admin.database.ServerValue.TIMESTAMP,
+      [`withdrawals/${withdrawalId}/resolvedBy`]: req.decoded.uid,
+      [`users/${userId}/withdrawals/${withdrawalId}/status`]: action,
+      [`users/${userId}/withdrawals/${withdrawalId}/resolvedAt`]: admin.database.ServerValue.TIMESTAMP,
+    };
+    if (walletTxId) {
+      updates[`users/${userId}/wallet/transactions/${walletTxId}/status`] =
+        action === "PAID" ? "SUCCESS" : "FAILED";
+    }
+    await db.ref().update(updates);
+
+    await createUserNotifications([userId],
+      action === "PAID" ? "Withdrawal paid" : "Withdrawal rejected",
+      action === "PAID"
+        ? `Your withdrawal of ${amount} coins has been paid.`
+        : `Your withdrawal of ${amount} coins was rejected and refunded to your wallet.`,
+      "WITHDRAWAL_" + action, { withdrawalId });
+    const token = (await db.ref(`users/${userId}/fcmToken`).once("value")).val();
+    if (token) {
+      await sendPush([token], action === "PAID" ? "Withdrawal paid" : "Withdrawal rejected",
+        action === "PAID" ? `${amount} coins sent to your UPI ID.` : `${amount} coins refunded to your wallet.`,
+        { type: "WITHDRAWAL_" + action, withdrawalId });
+    }
+    await logActivity(req.decoded.uid, "WITHDRAWAL_" + action, `${withdrawalId} • user ${userId} • ${amount} coins`);
+    return res.status(200).json({ status: action });
+  } catch (error) {
+    console.error("approveWithdrawal error", error.message);
+    return res.status(500).json({ error: "Could not resolve withdrawal" });
+  }
+});
+
+// Lets a player back out of a match they haven't started yet: frees their
+// slot(s), refunds the entry fee, and removes them from both the tournaments
+// and matches mirrors (joinMatch above writes to both, so this undoes both).
+app.post("/leaveMatch", moneyLimiter, async (req, res) => {
+  const idToken = getBearerToken(req);
+  if (!idToken) return res.status(401).json({ error: "Missing Firebase authorization token" });
+  let decoded;
+  try {
+    decoded = await admin.auth().verifyIdToken(idToken);
+  } catch (_error) {
+    return res.status(401).json({ error: "Invalid Firebase authorization token" });
+  }
+
+  const tournamentId = String(req.body?.tournamentId || "").trim();
+  if (!tournamentId) return res.status(400).json({ error: "tournamentId is required" });
+  const uid = decoded.uid;
+
+  try {
+    const [tournamentSnap, participantSnap] = await Promise.all([
+      db.ref(`tournaments/${tournamentId}`).once("value"),
+      db.ref(`tournaments/${tournamentId}/participants/${uid}`).once("value"),
+    ]);
+    const tournament = tournamentSnap.val();
+    const participant = participantSnap.val();
+    if (!tournament) return res.status(404).json({ error: "Match not found" });
+    if (!participant) return res.status(404).json({ error: "You are not registered in this match" });
+
+    const startAt = Number(tournament.startAt || 0);
+    const cutoff = 10 * 60 * 1000; // 10 minutes before start, matches the summary's leave window
+    if (startAt > 0 && startAt - Date.now() < cutoff) {
+      return res.status(409).json({ error: "Too close to match start to leave now" });
+    }
+    if (tournament.roomReleased === true || String(tournament.status || "").toUpperCase() === "COMPLETED") {
+      return res.status(409).json({ error: "This match has already started" });
+    }
+
+    const slotNumbers = Array.isArray(participant.slotNumbers) && participant.slotNumbers.length
+      ? participant.slotNumbers
+      : (participant.slotNumber ? [participant.slotNumber] : []);
+    const refund = Number(participant.entryFeeCoins || 0);
+
+    for (const slot of slotNumbers) {
+      await db.ref(`tournaments/${tournamentId}/slotIndex/${slot}`)
+        .transaction((current) => current === uid ? null : undefined);
+    }
+    const updates = {
+      [`tournaments/${tournamentId}/participants/${uid}`]: null,
+      [`tournaments/${tournamentId}/joinedSlots`]: admin.database.ServerValue.increment(-slotNumbers.length),
+      [`matches/${tournamentId}/joinedUsers/${uid}`]: null,
+      [`matches/${tournamentId}/participants/${uid}`]: null,
+    };
+    if (refund > 0) {
+      const txId = `leave_${tournamentId}_${uid}_${Date.now()}`;
+      updates[`users/${uid}/wallet/transactions/${txId}`] = {
+        type: "REFUND", title: `Left match • ${String(tournament.title || "Match")}`,
+        amount: refund, timestamp: admin.database.ServerValue.TIMESTAMP, status: "SUCCESS",
+      };
+    }
+    await db.ref().update(updates);
+    if (refund > 0) {
+      await db.ref(`users/${uid}/wallet`).transaction((current) => {
+        const wallet = current && typeof current === "object" ? { ...current } : {};
+        wallet.balance = Number(wallet.balance || 0) + refund;
+        return wallet;
+      });
+    }
+    await logActivity(uid, "MATCH_LEFT", `${tournamentId} • refunded ${refund} coins`);
+    return res.status(200).json({ status: "left", refundedCoins: refund });
+  } catch (error) {
+    console.error("leaveMatch error", error.message);
+    return res.status(500).json({ error: "Could not leave the match" });
+  }
+});
+
 // These workers are additive and do not touch the existing ZapUPI settlement path.
 setInterval(processRoomReleases, 15_000);
 setInterval(processBroadcasts, 15_000);
@@ -596,6 +1087,24 @@ setInterval(processCoinApprovals, 15_000);
 processRoomReleases();
 processBroadcasts();
 processCoinApprovals();
+
+// Render's free plan puts the service to sleep after ~15 minutes with no
+// inbound traffic; the next real request then pays a 30-60s cold-start
+// penalty (this is what the app's join/payment timeouts were widened for).
+// A self-ping to our own public /health endpoint every few minutes counts
+// as inbound traffic, so it keeps the free-plan instance warm without
+// needing an external cron service. Harmless on a paid plan too — it's a
+// tiny periodic GET. Set KEEP_ALIVE=false to disable it entirely (e.g. once
+// on a paid plan where sleeping is no longer possible).
+if ((process.env.KEEP_ALIVE || "true").trim().toLowerCase() !== "false") {
+  const KEEP_ALIVE_INTERVAL_MS = 10 * 60 * 1000; // 10 minutes, comfortably under the 15-minute sleep window
+  setInterval(() => {
+    fetch(`${publicBaseUrl}/health`).catch(() => {
+      // A missed ping just means one skipped keep-alive tick; the next
+      // real user request still works, it just may pay the cold-start cost.
+    });
+  }, KEEP_ALIVE_INTERVAL_MS);
+}
 
 app.listen(port, () => {
   console.log(`STARX24 payment backend listening on port ${port}`);
