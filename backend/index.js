@@ -532,18 +532,6 @@ app.post("/joinMatch", moneyLimiter, async (req, res) => {
     return res.status(401).json({ error: "Invalid Firebase authorization token" });
   }
 
-  // The maintenance switch used to only pop a dialog on the client — it never
-  // stopped this endpoint, so users could still join (and get charged) while
-  // the admin thought access was paused. Enforce it here, server-side.
-  try {
-    const maintenanceSnapshot = await db.ref("appConfig/maintenance").once("value");
-    if (maintenanceSnapshot.val() === true) {
-      return res.status(503).json({ error: "STARX24 is under maintenance. Please check back soon." });
-    }
-  } catch (_error) {
-    // If the maintenance flag can't be read, fail open rather than blocking joins.
-  }
-
   const tournamentId = String(req.body?.tournamentId || "").trim();
   // A26 — the client used to fetch a snapshot of free slots, show them in a
   // spinner, and send back whichever one the player picked. If someone else
