@@ -40,7 +40,15 @@
           ".write": "auth != null && (auth.token.email === 'fflueclark@gmail.com' || root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()).child('role').val() === 'MASTER_ADMIN')"
         },
         "wallet": {
-          ".write": "auth != null && (auth.token.email === 'fflueclark@gmail.com' || root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()).child('role').val() === 'RESULTS_COINS_ADMIN' || root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()).child('role').val() === 'MASTER_ADMIN')"
+          ".write": "auth != null && (auth.token.email === 'fflueclark@gmail.com' || root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()).child('role').val() === 'RESULTS_COINS_ADMIN' || root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()).child('role').val() === 'MASTER_ADMIN')",
+          "balance": {
+            ".write": "auth != null && auth.uid === $uid",
+            ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() === data.val() - root.child('users').child($uid).child('wallet').child('pendingDebit').child('amount').val() && root.child('users').child($uid).child('wallet').child('pendingDebit').child('amount').val() > 0"
+          },
+          "pendingDebit": {
+            ".write": "auth != null && auth.uid === $uid",
+            ".validate": "newData.hasChildren(['matchId','amount','slotCount']) && newData.child('slotCount').val() >= 1 && newData.child('slotCount').val() <= 4 && newData.child('amount').val() === root.child('tournaments').child(newData.child('matchId').val()).child('entryFeeCoins').val() * newData.child('slotCount').val() && root.child('users').child($uid).child('wallet').child('balance').val() === data.parent().child('balance').val() - newData.child('amount').val()"
+          }
         },
         "notifications": {
           ".read": "auth != null && auth.uid === $uid",
@@ -57,13 +65,13 @@
         "participants": {
           "$uid": {
             ".read": "auth != null",
-            ".write": "auth != null && (auth.token.email === 'fflueclark@gmail.com' || root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()).child('active').val() === true)",
-            ".validate": "newData.hasChildren(['userId','slotNumber','gameUid','gameName']) && newData.child('userId').val() === $uid && newData.child('slotNumber').val() >= 1 && newData.child('slotNumber').val() <= 48 && newData.child('gameUid').val() !== '' && newData.child('gameName').val() !== ''"
+            ".write": "auth != null && (auth.token.email === 'fflueclark@gmail.com' || root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()).child('active').val() === true || (auth.uid === $uid && !data.exists()))",
+            ".validate": "newData.hasChildren(['userId','slotNumber','gameUid','gameName','slotCount']) && newData.child('userId').val() === $uid && newData.child('slotNumber').val() >= 1 && newData.child('slotNumber').val() <= 48 && newData.child('gameUid').val() !== '' && newData.child('gameName').val() !== '' && newData.child('slotCount').val() >= 1 && newData.child('slotCount').val() <= 4 && (auth.token.email === 'fflueclark@gmail.com' || root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()).child('active').val() === true || root.child('tournaments').child($matchId).child('entryFeeCoins').val() === 0 || (root.child('users').child($uid).child('wallet').child('pendingDebit').child('matchId').val() === $matchId && root.child('users').child($uid).child('wallet').child('pendingDebit').child('slotCount').val() === newData.child('slotCount').val()))"
           }
         },
         "slotIndex": {
           "$slot": {
-            ".write": "auth != null && (auth.token.email === 'fflueclark@gmail.com' || root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()).child('active').val() === true) && $slot >= 1 && $slot <= 48"
+            ".write": "auth != null && $slot >= 1 && $slot <= 48 && (auth.token.email === 'fflueclark@gmail.com' || root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()).child('active').val() === true || (!data.exists() && newData.val() === auth.uid))"
           }
         }
       }
