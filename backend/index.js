@@ -706,7 +706,16 @@ app.post("/joinMatch", moneyLimiter, async (req, res) => {
       if (!debit.committed) {
         for (const ref of claimedSlotRefs) await ref.transaction((current) => current === decoded.uid ? null : undefined).catch(() => {});
         await participantRef.remove().catch(() => {});
-        return res.status(409).json({ error: `You need ${entryFee} coins to join with ${claimedSlotNumbers.length} slot(s)` });
+        // Read the balance again (outside the failed transaction) purely to make
+        // the error message useful — shows the player/admin the real gap between
+        // what they have and what this join actually costs, instead of a bare
+        // "not enough coins" that gives no way to tell a real shortfall from a
+        // stale/cached balance shown somewhere on the client.
+        const currentBalanceSnap = await walletRef.child("balance").once("value").catch(() => null);
+        const currentBalance = currentBalanceSnap ? Number(currentBalanceSnap.val() || 0) : 0;
+        return res.status(409).json({
+          error: `You have ${currentBalance} coins but need ${entryFee} to join with ${claimedSlotNumbers.length} slot(s)`
+        });
       }
       debitedAmount = entryFee;
     }
