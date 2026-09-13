@@ -696,9 +696,14 @@ app.post("/joinMatch", moneyLimiter, async (req, res) => {
     // a 2-slot join costs exactly double a 1-slot join, never a flat rate.
     const entryFee = perSlotFee * claimedSlotNumbers.length;
     if (entryFee > 0) {
+      // Debug trail for the "shows plenty of coins but still rejects the join"
+      // reports — captures exactly what the transaction saw at the moment it
+      // ran, since that's the one thing a post-failure re-read can't recover.
+      let sawDuringTransaction = null;
       const debit = await walletRef.transaction((current) => {
         const wallet = current && typeof current === "object" ? { ...current } : {};
         const balance = Number(wallet.balance || 0);
+        sawDuringTransaction = { rawCurrent: current, parsedBalance: balance };
         if (!Number.isFinite(balance) || balance < entryFee) return;
         wallet.balance = balance - entryFee;
         return wallet;
@@ -713,6 +718,14 @@ app.post("/joinMatch", moneyLimiter, async (req, res) => {
         // stale/cached balance shown somewhere on the client.
         const currentBalanceSnap = await walletRef.child("balance").once("value").catch(() => null);
         const currentBalance = currentBalanceSnap ? Number(currentBalanceSnap.val() || 0) : 0;
+        console.error("joinMatch insufficient-balance debug", {
+          uid: decoded.uid,
+          tournamentId,
+          entryFee,
+          slots: claimedSlotNumbers,
+          seenDuringDebitTransaction: sawDuringTransaction,
+          balanceRereadAfterAbort: currentBalance,
+        });
         return res.status(409).json({
           error: `You have ${currentBalance} coins but need ${entryFee} to join with ${claimedSlotNumbers.length} slot(s)`
         });
