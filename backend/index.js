@@ -86,32 +86,16 @@ function getBearerToken(req) {
   return header.startsWith("Bearer ") ? header.slice(7).trim() : "";
 }
 
-// Verifies the Firebase ID token ONCE and sets req.decoded. Must run before
-// moneyLimiter so the limiter can key on the real, verified uid instead of a
-// raw unverified bearer string — otherwise an attacker can send a fresh
-// random token on every request and each one looks like a brand-new "user"
-// to express-rate-limit, bypassing the per-account limit entirely.
-async function verifyFirebaseAuth(req, res, next) {
-  const idToken = getBearerToken(req);
-  if (!idToken) return res.status(401).json({ error: "Missing Firebase authorization token" });
-  try {
-    req.decoded = await admin.auth().verifyIdToken(idToken);
-    next();
-  } catch (_error) {
-    return res.status(401).json({ error: "Invalid Firebase authorization token" });
-  }
-}
-
-// Applied per-uid now that verifyFirebaseAuth runs first and guarantees
-// req.decoded is a real, verified identity by the time this key is read.
-// 20 requests/minute is generous for a real user tapping buttons and tight
-// enough to stop scripted abuse.
+// Applied per-uid (falls back to IP if the token is missing/invalid — the
+// route handler still rejects those) so one abusive account can't hammer
+// money-moving endpoints. 20 requests/minute is generous for a real user
+// tapping buttons and tight enough to stop scripted abuse.
 const moneyLimiter = rateLimit({
   windowMs: 60_000,
   limit: 20,
   standardHeaders: true,
   legacyHeaders: false,
-  keyGenerator: (req) => req.decoded?.uid || req.ip,
+  keyGenerator: (req) => getBearerToken(req) || req.ip,
   message: { error: "Too many requests. Please wait a moment and try again." },
 });
 
@@ -211,8 +195,16 @@ function paymentProviderError(data, statusCode) {
   return "Payment provider rejected the order. Please try again.";
 }
 
-app.post("/createOrder", verifyFirebaseAuth, moneyLimiter, async (req, res) => {
-  const decoded = req.decoded;
+app.post("/createOrder", moneyLimiter, async (req, res) => {
+  const idToken = getBearerToken(req);
+  if (!idToken) return res.status(401).json({ error: "Missing Firebase authorization token" });
+
+  let decoded;
+  try {
+    decoded = await admin.auth().verifyIdToken(idToken);
+  } catch (_error) {
+    return res.status(401).json({ error: "Invalid Firebase authorization token" });
+  }
 
   const amount = Number(req.body?.amount);
   if (!Number.isInteger(amount) || amount < 1 || amount > 100000) {
@@ -530,8 +522,15 @@ async function processCoinApprovals() {
 // Paid tournament registration. The client never writes wallet balances directly:
 // this endpoint verifies the Firebase session, checks the server-side entry fee,
 // atomically reserves the selected slot and debits wallet.balance exactly once.
-app.post("/joinMatch", verifyFirebaseAuth, moneyLimiter, async (req, res) => {
-  const decoded = req.decoded;
+app.post("/joinMatch", moneyLimiter, async (req, res) => {
+  const idToken = getBearerToken(req);
+  if (!idToken) return res.status(401).json({ error: "Missing Firebase authorization token" });
+  let decoded;
+  try {
+    decoded = await admin.auth().verifyIdToken(idToken);
+  } catch (_error) {
+    return res.status(401).json({ error: "Invalid Firebase authorization token" });
+  }
 
   const tournamentId = String(req.body?.tournamentId || "").trim();
   // A26 — the client used to fetch a snapshot of free slots, show them in a
@@ -600,7 +599,7 @@ app.post("/joinMatch", verifyFirebaseAuth, moneyLimiter, async (req, res) => {
     return res.status(400).json({ error: "Enter the Game UID and Game Name for every selected slot" });
   }
 
-  if (!tournamentId || (!usingPerSlotPlayers && (!gameUid || !gameName))) {
+  if (!tournamentId || requestedSlots.some((n) => n > 48) || (!usingPerSlotPlayers && (!gameUid || !gameName))) {
     return res.status(400).json({ error: "Complete match and game details are required" });
   }
   if (quantity > MAX_SLOTS_PER_JOIN) {
@@ -876,8 +875,15 @@ function validUpiId(value) {
 // withdrawal amount out of a user's spendable balance, matching the rules'
 // users/$uid/wallet write restriction to RESULTS_COINS_ADMIN/MASTER_ADMIN
 // (this endpoint uses the Admin SDK, which bypasses rules entirely).
-app.post("/requestWithdrawal", verifyFirebaseAuth, moneyLimiter, async (req, res) => {
-  const decoded = req.decoded;
+app.post("/requestWithdrawal", moneyLimiter, async (req, res) => {
+  const idToken = getBearerToken(req);
+  if (!idToken) return res.status(401).json({ error: "Missing Firebase authorization token" });
+  let decoded;
+  try {
+    decoded = await admin.auth().verifyIdToken(idToken);
+  } catch (_error) {
+    return res.status(401).json({ error: "Invalid Firebase authorization token" });
+  }
 
   const amount = Number(req.body?.amount);
   if (!validAmount(amount, 50, 100000)) {
@@ -1013,8 +1019,15 @@ app.post("/admin/approveWithdrawal", requireAdmin(isMasterOrPayment), async (req
 // Lets a player back out of a match they haven't started yet: frees their
 // slot(s), refunds the entry fee, and removes them from both the tournaments
 // and matches mirrors (joinMatch above writes to both, so this undoes both).
-app.post("/leaveMatch", verifyFirebaseAuth, moneyLimiter, async (req, res) => {
-  const decoded = req.decoded;
+app.post("/leaveMatch", moneyLimiter, async (req, res) => {
+  const idToken = getBearerToken(req);
+  if (!idToken) return res.status(401).json({ error: "Missing Firebase authorization token" });
+  let decoded;
+  try {
+    decoded = await admin.auth().verifyIdToken(idToken);
+  } catch (_error) {
+    return res.status(401).json({ error: "Invalid Firebase authorization token" });
+  }
 
   const tournamentId = String(req.body?.tournamentId || "").trim();
   if (!tournamentId) return res.status(400).json({ error: "tournamentId is required" });
