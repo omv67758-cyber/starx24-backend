@@ -2,7 +2,6 @@
   "rules": {
     ".read": false,
     ".write": false,
-
     "tokens": {
       "$uid": {
         ".read": "auth != null && auth.uid === $uid",
@@ -10,10 +9,9 @@
         ".validate": "newData.isString() && newData.val().length < 500"
       }
     },
-
     "admin_keys": {
-      ".read": "auth != null",
-      ".write": "auth != null && (auth.token.email === 'fflueclark@gmail.com' || root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()).child('role').val() === 'MASTER_ADMIN' || root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()).child('role').val() === 'SUPER_ADMIN')",
+      ".read": "auth != null && (auth.token.email === 'fflueclark@gmail.com' || root.child('admin_sessions').child(auth.uid).child('active').val() === true)",
+      ".write": "auth != null && (auth.token.email === 'fflueclark@gmail.com' || (root.child('admin_sessions').child(auth.uid).child('key').val() != null ? root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()) : root.child('x_none')).child('role').val() === 'MASTER_ADMIN')",
       "$key": {
         ".validate": "newData.hasChildren(['role','active']) && (newData.child('role').val() === 'MASTER_ADMIN' || newData.child('role').val() === 'SUPER_ADMIN' || newData.child('role').val() === 'MATCH_OPERATIONS_ADMIN' || newData.child('role').val() === 'RESULTS_COINS_ADMIN' || newData.child('role').val() === 'CUSTOMER_SUPPORT_ADMIN' || newData.child('role').val() === 'PAYMENT_ADMIN' || newData.child('role').val() === 'MATCH_ADMIN' || newData.child('role').val() === 'TOURNAMENT_MANAGER' || newData.child('role').val() === 'SUPPORT_AGENT' || newData.child('role').val() === 'MODERATOR')"
       }
@@ -21,202 +19,247 @@
     "admin_sessions": {
       "$uid": {
         ".read": "auth != null && (auth.uid === $uid || auth.token.email === 'fflueclark@gmail.com')",
-        ".write": "auth != null && auth.uid === $uid"
+        ".write": "auth != null && auth.uid === $uid",
+        ".validate": "newData.hasChildren(['key'])"
       }
     },
-
     "users": {
-      ".indexOn": ["role"],
+      ".indexOn": [
+        "role"
+      ],
       "$uid": {
-        ".read": "auth != null && (auth.uid === $uid || auth.token.email === 'fflueclark@gmail.com' || root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()).child('active').val() === true)",
-        ".write": "auth != null && (((auth.uid === $uid) && !data.exists() && newData.child('role').val() === 'USER') || auth.token.email === 'fflueclark@gmail.com' || root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()).child('role').val() === 'MASTER_ADMIN')",
+        ".read": "auth != null && (auth.uid === $uid || auth.token.email === 'fflueclark@gmail.com' || (root.child('admin_sessions').child(auth.uid).child('key').val() != null ? root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()) : root.child('x_none')).child('active').val() === true)",
+        ".write": "auth != null && (((auth.uid === $uid) && !data.exists() && newData.child('role').val() === 'USER') || auth.token.email === 'fflueclark@gmail.com' || (root.child('admin_sessions').child(auth.uid).child('key').val() != null ? root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()) : root.child('x_none')).child('role').val() === 'MASTER_ADMIN')",
         "fcmToken": {
-          ".write": "auth != null && auth.uid === $uid"
+          ".write": "auth != null && auth.uid === $uid",
+          ".validate": "newData.isString() && newData.val().length < 500"
         },
         "lastGameName": {
-          ".write": "auth != null && auth.uid === $uid"
+          ".write": "auth != null && auth.uid === $uid",
+          ".validate": "newData.isString() && newData.val().length < 64"
         },
         "coins": {
-          ".write": "auth != null && (auth.token.email === 'fflueclark@gmail.com' || root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()).child('role').val() === 'MASTER_ADMIN')"
+          ".write": "auth != null && (auth.token.email === 'fflueclark@gmail.com' || (root.child('admin_sessions').child(auth.uid).child('key').val() != null ? root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()) : root.child('x_none')).child('role').val() === 'MASTER_ADMIN')"
         },
         "wallet": {
-          ".write": "auth != null && (auth.token.email === 'fflueclark@gmail.com' || root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()).child('role').val() === 'RESULTS_COINS_ADMIN' || root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()).child('role').val() === 'MASTER_ADMIN')",
+          ".write": "auth != null && (auth.token.email === 'fflueclark@gmail.com' || (root.child('admin_sessions').child(auth.uid).child('key').val() != null ? root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()) : root.child('x_none')).child('role').val() === 'RESULTS_COINS_ADMIN' || (root.child('admin_sessions').child(auth.uid).child('key').val() != null ? root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()) : root.child('x_none')).child('role').val() === 'MASTER_ADMIN')",
           "balance": {
             ".write": "auth != null && auth.uid === $uid",
-            ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() === data.val() - root.child('users').child($uid).child('wallet').child('pendingDebit').child('amount').val() && root.child('users').child($uid).child('wallet').child('pendingDebit').child('amount').val() > 0"
+            ".validate": "newData.isNumber() && newData.val() >= 0 && (!data.exists() ? newData.val() === 0 : newData.val() < data.val())"
           },
           "pendingDebit": {
             ".write": "auth != null && auth.uid === $uid",
-            ".validate": "newData.hasChildren(['matchId','amount','slotCount']) && newData.child('slotCount').val() >= 1 && newData.child('slotCount').val() <= 4 && newData.child('amount').val() === root.child('tournaments').child(newData.child('matchId').val()).child('entryFeeCoins').val() * newData.child('slotCount').val() && root.child('users').child($uid).child('wallet').child('balance').val() === data.parent().child('balance').val() - newData.child('amount').val()"
+            ".validate": "(!newData.exists() && !data.exists()) || (newData.hasChildren(['matchId','amount','slotCount']) && newData.child('slotCount').val() >= 1 && newData.child('slotCount').val() <= 4 && newData.child('amount').val() === root.child('tournaments').child(newData.child('matchId').val()).child('entryFeeCoins').val() * newData.child('slotCount').val() && newData.parent().child('balance').val() === data.parent().child('balance').val() - newData.child('amount').val())"
+          },
+          "transactions": {
+            "$txId": {
+              ".write": "auth != null && (auth.uid === $uid || (root.child('admin_sessions').child(auth.uid).child('key').val() != null ? root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()) : root.child('x_none')).child('active').val() === true)",
+              ".validate": "newData.hasChildren(['type','title','amount','status']) && newData.child('amount').isNumber()"
+            }
           }
         },
         "notifications": {
           ".read": "auth != null && auth.uid === $uid",
-          ".write": "auth != null && (auth.uid === $uid || root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()).child('role').val() === 'RESULTS_COINS_ADMIN' || root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()).child('role').val() === 'MASTER_ADMIN')"
+          "$id": {
+            ".write": "auth != null && (auth.uid === $uid || (root.child('admin_sessions').child(auth.uid).child('key').val() != null ? root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()) : root.child('x_none')).child('active').val() === true)",
+            ".validate": "newData.hasChildren(['title']) || !newData.exists()"
+          }
         }
       }
     },
-
     "tournaments": {
       ".read": "auth != null",
-      ".indexOn": ["status", "startAt"],
+      ".indexOn": [
+        "status",
+        "startAt",
+        "categoryId"
+      ],
       "$matchId": {
-        ".write": "auth != null && (auth.token.email === 'fflueclark@gmail.com' || root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()).child('role').val() === 'MATCH_OPERATIONS_ADMIN' || root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()).child('role').val() === 'MASTER_ADMIN' || root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()).child('role').val() === 'TOURNAMENT_MANAGER' || root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()).child('role').val() === 'MATCH_ADMIN')",
+        ".write": "auth != null && (auth.token.email === 'fflueclark@gmail.com' || (root.child('admin_sessions').child(auth.uid).child('key').val() != null ? root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()) : root.child('x_none')).child('role').val() === 'MATCH_OPERATIONS_ADMIN' || (root.child('admin_sessions').child(auth.uid).child('key').val() != null ? root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()) : root.child('x_none')).child('role').val() === 'MASTER_ADMIN' || (root.child('admin_sessions').child(auth.uid).child('key').val() != null ? root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()) : root.child('x_none')).child('role').val() === 'TOURNAMENT_MANAGER' || (root.child('admin_sessions').child(auth.uid).child('key').val() != null ? root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()) : root.child('x_none')).child('role').val() === 'MATCH_ADMIN')",
         "participants": {
+          ".read": "auth != null",
           "$uid": {
             ".read": "auth != null",
-            ".write": "auth != null && (auth.token.email === 'fflueclark@gmail.com' || root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()).child('active').val() === true || (auth.uid === $uid && !data.exists()))",
-            ".validate": "newData.hasChildren(['userId','slotNumber','gameUid','gameName','slotCount']) && newData.child('userId').val() === $uid && newData.child('slotNumber').val() >= 1 && newData.child('slotNumber').val() <= 48 && newData.child('gameUid').val() !== '' && newData.child('gameName').val() !== '' && newData.child('slotCount').val() >= 1 && newData.child('slotCount').val() <= 4 && (auth.token.email === 'fflueclark@gmail.com' || root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()).child('active').val() === true || root.child('tournaments').child($matchId).child('entryFeeCoins').val() === 0 || (root.child('users').child($uid).child('wallet').child('pendingDebit').child('matchId').val() === $matchId && root.child('users').child($uid).child('wallet').child('pendingDebit').child('slotCount').val() === newData.child('slotCount').val()))"
+            ".write": "auth != null && (auth.token.email === 'fflueclark@gmail.com' || (root.child('admin_sessions').child(auth.uid).child('key').val() != null ? root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()) : root.child('x_none')).child('active').val() === true || (auth.uid === $uid && !data.exists()))",
+            ".validate": "newData.hasChildren(['userId','slotNumber','gameUid','gameName','slotCount']) && newData.child('userId').val() === auth.uid && newData.child('slotNumber').val() >= 1 && newData.child('slotNumber').val() <= (root.child('tournaments').child($matchId).child('totalSlots').val() == null ? 48 : root.child('tournaments').child($matchId).child('totalSlots').val()) && newData.child('gameUid').val() !== '' && newData.child('gameName').val() !== '' && newData.child('slotCount').val() >= 1 && newData.child('slotCount').val() <= 4 && (auth.token.email === 'fflueclark@gmail.com' || (root.child('admin_sessions').child(auth.uid).child('key').val() != null ? root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()) : root.child('x_none')).child('active').val() === true || root.child('tournaments').child($matchId).child('entryFeeCoins').val() == null || root.child('tournaments').child($matchId).child('entryFeeCoins').val() === 0)"
           }
         },
         "slotIndex": {
+          ".read": "auth != null",
           "$slot": {
-            ".write": "auth != null && $slot >= 1 && $slot <= 48 && (auth.token.email === 'fflueclark@gmail.com' || root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()).child('active').val() === true || (!data.exists() && newData.val() === auth.uid))"
+            ".write": "auth != null && (auth.token.email === 'fflueclark@gmail.com' || (root.child('admin_sessions').child(auth.uid).child('key').val() != null ? root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()) : root.child('x_none')).child('active').val() === true || ((root.child('tournaments').child($matchId).child('entryFeeCoins').val() == null || root.child('tournaments').child($matchId).child('entryFeeCoins').val() === 0) && !data.exists() && newData.val() === auth.uid))"
           }
+        },
+        "joinedSlots": {
+          ".write": "auth != null && (auth.token.email === 'fflueclark@gmail.com' || (root.child('admin_sessions').child(auth.uid).child('key').val() != null ? root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()) : root.child('x_none')).child('active').val() === true || (newData.isNumber() && newData.val() >= (data.val() == null ? 0 : data.val()) && newData.val() - (data.val() == null ? 0 : data.val()) <= 4 && newData.val() - (data.val() == null ? 0 : data.val()) <= newData.parent().child('participants').child(auth.uid).child('slotCount').val() && newData.val() <= (newData.parent().child('totalSlots').val() == null ? 48 : newData.parent().child('totalSlots').val()) && newData.parent().child('participants').child(auth.uid).child('userId').val() === auth.uid))"
+        },
+        "waitlist": {
+          ".read": "auth != null",
+          "$uid": {
+            ".write": "auth != null && (auth.token.email === 'fflueclark@gmail.com' || (root.child('admin_sessions').child(auth.uid).child('key').val() != null ? root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()) : root.child('x_none')).child('active').val() === true || (auth.uid === $uid && !data.exists()))",
+            ".validate": "newData.hasChildren(['joinedAt']) && (auth.token.email === 'fflueclark@gmail.com' || (root.child('admin_sessions').child(auth.uid).child('key').val() != null ? root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()) : root.child('x_none')).child('active').val() === true || root.child('tournaments').child($matchId).child('entryFeeCoins').val() == null || root.child('tournaments').child($matchId).child('entryFeeCoins').val() === 0)"
+          }
+        },
+        "results": {
+          ".read": "auth != null",
+          ".write": "auth != null && (auth.token.email === 'fflueclark@gmail.com' || (root.child('admin_sessions').child(auth.uid).child('key').val() != null ? root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()) : root.child('x_none')).child('active').val() === true)"
+        },
+        "$other": {
+          ".write": "auth != null && (auth.token.email === 'fflueclark@gmail.com' || (root.child('admin_sessions').child(auth.uid).child('key').val() != null ? root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()) : root.child('x_none')).child('role').val() === 'MATCH_OPERATIONS_ADMIN' || (root.child('admin_sessions').child(auth.uid).child('key').val() != null ? root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()) : root.child('x_none')).child('role').val() === 'MASTER_ADMIN' || (root.child('admin_sessions').child(auth.uid).child('key').val() != null ? root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()) : root.child('x_none')).child('role').val() === 'TOURNAMENT_MANAGER' || (root.child('admin_sessions').child(auth.uid).child('key').val() != null ? root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()) : root.child('x_none')).child('role').val() === 'MATCH_ADMIN')"
         }
       }
     },
-
     "matches": {
-      ".read": "auth != null && (auth.token.email === 'fflueclark@gmail.com' || root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()).child('active').val() === true)",
-      ".indexOn": ["status"],
+      ".read": "auth != null && (auth.token.email === 'fflueclark@gmail.com' || (root.child('admin_sessions').child(auth.uid).child('key').val() != null ? root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()) : root.child('x_none')).child('active').val() === true)",
+      ".indexOn": [
+        "status"
+      ],
       "$matchId": {
-        ".write": "auth != null && (auth.token.email === 'fflueclark@gmail.com' || root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()).child('role').val() === 'MATCH_OPERATIONS_ADMIN' || root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()).child('role').val() === 'MASTER_ADMIN' || root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()).child('role').val() === 'MATCH_ADMIN')",
-        "status": {
-          ".write": "auth != null && (auth.token.email === 'fflueclark@gmail.com' || root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()).child('role').val() === 'MATCH_OPERATIONS_ADMIN' || root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()).child('role').val() === 'RESULTS_COINS_ADMIN' || root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()).child('role').val() === 'MASTER_ADMIN' || root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()).child('role').val() === 'MATCH_ADMIN')"
-        },
+        ".write": "auth != null && (auth.token.email === 'fflueclark@gmail.com' || (root.child('admin_sessions').child(auth.uid).child('key').val() != null ? root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()) : root.child('x_none')).child('role').val() === 'MATCH_OPERATIONS_ADMIN' || (root.child('admin_sessions').child(auth.uid).child('key').val() != null ? root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()) : root.child('x_none')).child('role').val() === 'MASTER_ADMIN' || (root.child('admin_sessions').child(auth.uid).child('key').val() != null ? root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()) : root.child('x_none')).child('role').val() === 'MATCH_ADMIN')",
         "joinedUsers": {
           "$uid": {
-            ".read": "auth != null && (auth.uid === $uid || auth.token.email === 'fflueclark@gmail.com' || root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()).child('active').val() === true)",
-            ".write": "auth != null && (auth.token.email === 'fflueclark@gmail.com' || root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()).child('active').val() === true)",
+            ".read": "auth != null && (auth.uid === $uid || auth.token.email === 'fflueclark@gmail.com' || (root.child('admin_sessions').child(auth.uid).child('key').val() != null ? root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()) : root.child('x_none')).child('active').val() === true)",
+            ".write": "auth != null && (auth.token.email === 'fflueclark@gmail.com' || (root.child('admin_sessions').child(auth.uid).child('key').val() != null ? root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()) : root.child('x_none')).child('active').val() === true)",
             ".validate": "newData.child('slotNumber').val() >= 1 && newData.child('slotNumber').val() <= 48 && newData.child('gameUid').val() !== '' && newData.child('gameName').val() !== ''"
           }
         },
         "participants": {
           "$uid": {
             ".read": "auth != null",
-            ".write": "auth != null && (auth.token.email === 'fflueclark@gmail.com' || root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()).child('active').val() === true)"
+            ".write": "auth != null && (auth.token.email === 'fflueclark@gmail.com' || (root.child('admin_sessions').child(auth.uid).child('key').val() != null ? root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()) : root.child('x_none')).child('active').val() === true)"
           }
         },
         "roomRelease": {
-          ".read": "auth != null && (auth.token.email === 'fflueclark@gmail.com' || root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()).child('active').val() === true)",
-          ".write": "auth != null && (auth.token.email === 'fflueclark@gmail.com' || root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()).child('role').val() === 'MATCH_OPERATIONS_ADMIN' || root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()).child('role').val() === 'MASTER_ADMIN')"
+          ".read": "auth != null && (auth.token.email === 'fflueclark@gmail.com' || (root.child('admin_sessions').child(auth.uid).child('key').val() != null ? root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()) : root.child('x_none')).child('active').val() === true)",
+          ".write": "auth != null && (auth.token.email === 'fflueclark@gmail.com' || (root.child('admin_sessions').child(auth.uid).child('key').val() != null ? root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()) : root.child('x_none')).child('role').val() === 'MATCH_OPERATIONS_ADMIN' || (root.child('admin_sessions').child(auth.uid).child('key').val() != null ? root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()) : root.child('x_none')).child('role').val() === 'MASTER_ADMIN')"
         }
       }
     },
-
     "coin_requests": {
-      ".read": "auth != null && (auth.token.email === 'fflueclark@gmail.com' || root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()).child('role').val() === 'RESULTS_COINS_ADMIN' || root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()).child('role').val() === 'MASTER_ADMIN')",
-      ".indexOn": ["status"],
+      ".read": "auth != null && (auth.token.email === 'fflueclark@gmail.com' || (root.child('admin_sessions').child(auth.uid).child('key').val() != null ? root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()) : root.child('x_none')).child('role').val() === 'RESULTS_COINS_ADMIN' || (root.child('admin_sessions').child(auth.uid).child('key').val() != null ? root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()) : root.child('x_none')).child('role').val() === 'MASTER_ADMIN')",
+      ".indexOn": [
+        "status"
+      ],
       "$requestId": {
-        ".write": "auth != null && (auth.token.email === 'fflueclark@gmail.com' || root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()).child('role').val() === 'RESULTS_COINS_ADMIN' || root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()).child('role').val() === 'MASTER_ADMIN')"
+        ".write": "auth != null && (auth.token.email === 'fflueclark@gmail.com' || (root.child('admin_sessions').child(auth.uid).child('key').val() != null ? root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()) : root.child('x_none')).child('role').val() === 'RESULTS_COINS_ADMIN' || (root.child('admin_sessions').child(auth.uid).child('key').val() != null ? root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()) : root.child('x_none')).child('role').val() === 'MASTER_ADMIN')"
       }
     },
     "coin_history": {
       "$uid": {
-        ".read": "auth != null && (auth.uid === $uid || root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()).child('active').val() === true)",
-        ".write": "auth != null && (auth.token.email === 'fflueclark@gmail.com' || root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()).child('role').val() === 'RESULTS_COINS_ADMIN' || root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()).child('role').val() === 'MASTER_ADMIN')"
+        ".read": "auth != null && (auth.uid === $uid || (root.child('admin_sessions').child(auth.uid).child('key').val() != null ? root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()) : root.child('x_none')).child('active').val() === true)",
+        ".write": "auth != null && (auth.token.email === 'fflueclark@gmail.com' || (root.child('admin_sessions').child(auth.uid).child('key').val() != null ? root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()) : root.child('x_none')).child('role').val() === 'RESULTS_COINS_ADMIN' || (root.child('admin_sessions').child(auth.uid).child('key').val() != null ? root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()) : root.child('x_none')).child('role').val() === 'MASTER_ADMIN')"
       }
     },
-
+    "orders": {
+      ".read": "auth != null && (data.child('uid').val() === auth.uid || auth.token.email === 'fflueclark@gmail.com' || (root.child('admin_sessions').child(auth.uid).child('key').val() != null ? root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()) : root.child('x_none')).child('role').val() === 'PAYMENT_ADMIN' || (root.child('admin_sessions').child(auth.uid).child('key').val() != null ? root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()) : root.child('x_none')).child('role').val() === 'MASTER_ADMIN')",
+      "$orderId": {
+        ".read": "auth != null && (data.child('uid').val() === auth.uid || auth.token.email === 'fflueclark@gmail.com' || (root.child('admin_sessions').child(auth.uid).child('key').val() != null ? root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()) : root.child('x_none')).child('active').val() === true)",
+        ".write": "auth != null && (data.child('uid').val() === auth.uid || !data.exists())"
+      }
+    },
     "broadcast_notifications": {
-      ".read": "auth != null && root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()).child('active').val() === true",
-      ".write": "auth != null && (auth.token.email === 'fflueclark@gmail.com' || root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()).child('role').val() === 'MATCH_OPERATIONS_ADMIN' || root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()).child('role').val() === 'MASTER_ADMIN')"
+      ".read": "auth != null && ((root.child('admin_sessions').child(auth.uid).child('key').val() != null ? root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()) : root.child('x_none')).child('active').val() === true || auth.token.email === 'fflueclark@gmail.com')",
+      ".write": "auth != null && (auth.token.email === 'fflueclark@gmail.com' || (root.child('admin_sessions').child(auth.uid).child('key').val() != null ? root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()) : root.child('x_none')).child('active').val() === true)"
     },
     "gameModes": {
       ".read": "auth != null",
       "$id": {
-        ".write": "auth != null && (auth.token.email === 'fflueclark@gmail.com' || root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()).child('role').val() === 'MATCH_OPERATIONS_ADMIN' || root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()).child('role').val() === 'MASTER_ADMIN')"
+        ".write": "auth != null && (auth.token.email === 'fflueclark@gmail.com' || (root.child('admin_sessions').child(auth.uid).child('key').val() != null ? root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()) : root.child('x_none')).child('role').val() === 'MATCH_OPERATIONS_ADMIN' || (root.child('admin_sessions').child(auth.uid).child('key').val() != null ? root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()) : root.child('x_none')).child('role').val() === 'MASTER_ADMIN')"
       }
     },
     "banners": {
       ".read": "auth != null",
       "$id": {
-        ".write": "auth != null && (auth.token.email === 'fflueclark@gmail.com' || root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()).child('role').val() === 'MATCH_OPERATIONS_ADMIN' || root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()).child('role').val() === 'MASTER_ADMIN')"
+        ".write": "auth != null && (auth.token.email === 'fflueclark@gmail.com' || (root.child('admin_sessions').child(auth.uid).child('key').val() != null ? root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()) : root.child('x_none')).child('role').val() === 'MATCH_OPERATIONS_ADMIN' || (root.child('admin_sessions').child(auth.uid).child('key').val() != null ? root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()) : root.child('x_none')).child('role').val() === 'MASTER_ADMIN')"
       }
     },
     "support": {
-      ".read": "auth != null && root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()).child('active').val() === true",
+      ".read": "auth != null && (root.child('admin_sessions').child(auth.uid).child('key').val() != null ? root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()) : root.child('x_none')).child('active').val() === true",
       "$ticketId": {
-        ".read": "auth != null && (root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()).child('active').val() === true || data.child('userId').val() === auth.uid || data.child('uid').val() === auth.uid)",
-        ".write": "auth != null && (auth.token.email === 'fflueclark@gmail.com' || root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()).child('role').val() === 'CUSTOMER_SUPPORT_ADMIN' || root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()).child('role').val() === 'MASTER_ADMIN' || (!data.exists() && newData.child('userId').val() === auth.uid))"
+        ".read": "auth != null && ((root.child('admin_sessions').child(auth.uid).child('key').val() != null ? root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()) : root.child('x_none')).child('active').val() === true || data.child('userId').val() === auth.uid || data.child('uid').val() === auth.uid)",
+        ".write": "auth != null && (auth.token.email === 'fflueclark@gmail.com' || (root.child('admin_sessions').child(auth.uid).child('key').val() != null ? root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()) : root.child('x_none')).child('role').val() === 'CUSTOMER_SUPPORT_ADMIN' || (root.child('admin_sessions').child(auth.uid).child('key').val() != null ? root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()) : root.child('x_none')).child('role').val() === 'MASTER_ADMIN' || (!data.exists() && newData.child('userId').val() === auth.uid))"
       }
     },
-
     "withdrawals": {
-      ".read": "auth != null && (auth.token.email === 'fflueclark@gmail.com' || root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()).child('role').val() === 'MASTER_ADMIN' || root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()).child('role').val() === 'PAYMENT_ADMIN')",
-      ".indexOn": ["userId", "status"],
+      ".read": "auth != null && (auth.token.email === 'fflueclark@gmail.com' || (root.child('admin_sessions').child(auth.uid).child('key').val() != null ? root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()) : root.child('x_none')).child('role').val() === 'MASTER_ADMIN' || (root.child('admin_sessions').child(auth.uid).child('key').val() != null ? root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()) : root.child('x_none')).child('role').val() === 'PAYMENT_ADMIN')",
+      ".indexOn": [
+        "userId",
+        "status"
+      ],
       "$id": {
+        ".read": "auth != null && (data.child('userId').val() === auth.uid || auth.token.email === 'fflueclark@gmail.com' || (root.child('admin_sessions').child(auth.uid).child('key').val() != null ? root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()) : root.child('x_none')).child('active').val() === true)",
         ".write": false
       }
     },
     "deposits": {
-      ".read": "auth != null && (auth.token.email === 'fflueclark@gmail.com' || root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()).child('role').val() === 'MASTER_ADMIN' || root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()).child('role').val() === 'PAYMENT_ADMIN')",
-      ".write": "auth != null && (auth.token.email === 'fflueclark@gmail.com' || root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()).child('role').val() === 'MASTER_ADMIN' || root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()).child('role').val() === 'PAYMENT_ADMIN')",
-      ".indexOn": ["userId", "status"],
+      ".read": "auth != null && (auth.token.email === 'fflueclark@gmail.com' || (root.child('admin_sessions').child(auth.uid).child('key').val() != null ? root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()) : root.child('x_none')).child('role').val() === 'MASTER_ADMIN' || (root.child('admin_sessions').child(auth.uid).child('key').val() != null ? root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()) : root.child('x_none')).child('role').val() === 'PAYMENT_ADMIN')",
+      ".write": "auth != null && (auth.token.email === 'fflueclark@gmail.com' || (root.child('admin_sessions').child(auth.uid).child('key').val() != null ? root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()) : root.child('x_none')).child('role').val() === 'MASTER_ADMIN' || (root.child('admin_sessions').child(auth.uid).child('key').val() != null ? root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()) : root.child('x_none')).child('role').val() === 'PAYMENT_ADMIN')",
+      ".indexOn": [
+        "userId",
+        "status"
+      ],
       "$id": {
         ".validate": "newData.hasChildren(['userId','amount','status']) && newData.child('amount').isNumber() && newData.child('amount').val() > 0"
       }
     },
     "transactions": {
-      ".read": "auth != null && (auth.token.email === 'fflueclark@gmail.com' || root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()).child('role').val() === 'MASTER_ADMIN')",
+      ".read": "auth != null && (auth.token.email === 'fflueclark@gmail.com' || (root.child('admin_sessions').child(auth.uid).child('key').val() != null ? root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()) : root.child('x_none')).child('role').val() === 'MASTER_ADMIN')",
       ".write": false
     },
-
     "notifications": {
       ".read": "auth != null",
       "$id": {
-        ".write": "auth != null && (auth.token.email === 'fflueclark@gmail.com' || root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()).child('active').val() === true)"
+        ".write": "auth != null && (auth.token.email === 'fflueclark@gmail.com' || (root.child('admin_sessions').child(auth.uid).child('key').val() != null ? root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()) : root.child('x_none')).child('active').val() === true)"
       }
     },
     "announcements": {
       ".read": "auth != null",
-      ".write": "auth != null && root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()).child('active').val() === true"
+      ".write": "auth != null && (auth.token.email === 'fflueclark@gmail.com' || (root.child('admin_sessions').child(auth.uid).child('key').val() != null ? root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()) : root.child('x_none')).child('active').val() === true)"
     },
     "appConfig": {
       ".read": "auth != null",
-      ".write": "auth != null && (auth.token.email === 'fflueclark@gmail.com' || root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()).child('active').val() === true)"
+      ".write": "auth != null && (auth.token.email === 'fflueclark@gmail.com' || (root.child('admin_sessions').child(auth.uid).child('key').val() != null ? root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()) : root.child('x_none')).child('active').val() === true)"
     },
     "phoneIndex": {
       "$phone": {
-        ".read": "auth != null && (data.child('uid').val() === auth.uid || auth.token.email === 'fflueclark@gmail.com' || root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()).child('active').val() === true)",
+        ".read": "auth != null && (data.child('uid').val() === auth.uid || auth.token.email === 'fflueclark@gmail.com' || (root.child('admin_sessions').child(auth.uid).child('key').val() != null ? root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()) : root.child('x_none')).child('active').val() === true)",
         ".write": "auth != null && (!data.exists() && newData.child('uid').val() === auth.uid)"
       }
     },
     "faq": {
       ".read": "auth != null",
-      ".write": "auth != null && root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()).child('active').val() === true"
+      ".write": "auth != null && (auth.token.email === 'fflueclark@gmail.com' || (root.child('admin_sessions').child(auth.uid).child('key').val() != null ? root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()) : root.child('x_none')).child('active').val() === true)"
     },
     "leaderboard": {
       ".read": "auth != null",
-      ".write": "auth != null && root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()).child('active').val() === true"
+      ".write": "auth != null && (auth.token.email === 'fflueclark@gmail.com' || (root.child('admin_sessions').child(auth.uid).child('key').val() != null ? root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()) : root.child('x_none')).child('active').val() === true)"
     },
     "results": {
       ".read": "auth != null",
-      ".write": "auth != null && root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()).child('active').val() === true"
+      ".write": "auth != null && (auth.token.email === 'fflueclark@gmail.com' || (root.child('admin_sessions').child(auth.uid).child('key').val() != null ? root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()) : root.child('x_none')).child('active').val() === true)"
     },
     "rewards": {
       ".read": "auth != null",
-      ".write": "auth != null && root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()).child('active').val() === true"
+      ".write": "auth != null && (auth.token.email === 'fflueclark@gmail.com' || (root.child('admin_sessions').child(auth.uid).child('key').val() != null ? root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()) : root.child('x_none')).child('active').val() === true)"
     },
-
     "teams": {
-      ".indexOn": ["ownerUid"],
+      ".indexOn": [
+        "ownerUid"
+      ],
       "$teamId": {
         ".read": "auth != null",
-        ".write": "auth != null && ((!data.exists() && newData.child('ownerUid').val() === auth.uid) || data.child('ownerUid').val() === auth.uid || auth.token.email === 'fflueclark@gmail.com' || root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()).child('active').val() === true)",
+        ".write": "auth != null && ((!data.exists() && newData.child('ownerUid').val() === auth.uid) || data.child('ownerUid').val() === auth.uid || auth.token.email === 'fflueclark@gmail.com' || (root.child('admin_sessions').child(auth.uid).child('key').val() != null ? root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()) : root.child('x_none')).child('active').val() === true)",
         ".validate": "newData.hasChildren(['ownerUid','name'])",
         "members": {
           "$uid": {
-            ".write": "auth != null && (auth.uid === $uid || data.parent().parent().child('ownerUid').val() === auth.uid || root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()).child('active').val() === true)"
+            ".write": "auth != null && (auth.uid === $uid || data.parent().parent().child('ownerUid').val() === auth.uid || (root.child('admin_sessions').child(auth.uid).child('key').val() != null ? root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()) : root.child('x_none')).child('active').val() === true)"
           }
         }
       }
     },
-
     "activity_logs": {
-      ".read": "auth != null && root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()).child('active').val() === true",
-      ".write": "auth != null && root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()).child('active').val() === true"
+      ".read": "auth != null && (root.child('admin_sessions').child(auth.uid).child('key').val() != null ? root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()) : root.child('x_none')).child('active').val() === true",
+      ".write": "auth != null && ((root.child('admin_sessions').child(auth.uid).child('key').val() != null ? root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()) : root.child('x_none')).child('active').val() === true || auth.token.email === 'fflueclark@gmail.com')"
     }
   }
 }
