@@ -303,6 +303,21 @@ async function creditWalletOnce(order) {
       timestamp: admin.database.ServerValue.TIMESTAMP,
       status: "SUCCESS",
     });
+    // FIX (notifications): the user should immediately see + hear about a
+    // successful top-up. Previously only the wallet balance changed silently.
+    try {
+      await createUserNotifications([order.uid], "Wallet credited",
+        `Your wallet was credited with ₹${Number(order.amount)}.`, "WALLET_CREDIT",
+        { orderId: order.orderId });
+      const token = (await db.ref(`users/${order.uid}/fcmToken`).once("value")).val();
+      if (token) {
+        await sendPush([token], "Wallet credited 💰",
+          `₹${Number(order.amount)} added to your STARX24 wallet. Play tournaments now!`,
+          { type: "WALLET_CREDIT", orderId: order.orderId });
+      }
+    } catch (pushError) {
+      console.error("wallet credit push error", pushError.message);
+    }
   }
 
   return result.committed;
@@ -378,6 +393,19 @@ async function getJoinedUids(matchSnapshot) {
   node.forEach((player) => {
     if (player.key) uids.push(player.key);
   });
+  // FREE matches joined straight from the app (FirebaseDirectJoinClient) only
+  // write tournaments/{id}/participants — the matches/ mirror is admin-only
+  // under the security rules, so a free-join player would otherwise never be
+  // counted here and would miss the room-release notification entirely.
+  if (!uids.length) {
+    const tournamentId = matchSnapshot.key;
+    if (tournamentId) {
+      const tournamentParticipants = await db.ref(`tournaments/${tournamentId}/participants`).once("value");
+      tournamentParticipants.forEach((player) => {
+        if (player.key) uids.push(player.key);
+      });
+    }
+  }
   return uids;
 }
 
@@ -464,23 +492,67 @@ async function processBroadcasts() {
   if (broadcastWorkerRunning) return;
   broadcastWorkerRunning = true;
   try {
-    const snapshot = await db.ref("broadcast_notifications").once("value");
-    const jobs = [];
-    snapshot.forEach((item) => {
-      if (item.child("pushSent").val() !== true) jobs.push(item);
-    });
-    for (const item of jobs) {
-      const claimed = await db.ref(`broadcast_notifications/${item.key}/pushSent`)
-        .transaction((current) => current === true ? undefined : true);
-      if (!claimed.committed) continue;
-      const title = String(item.child("title").val() || "ArenaX notification");
-      const description = String(item.child("description").val() || "");
-      const tokens = await getAllUserTokens();
-      const users = await db.ref("users").once("value");
-      const uids = [];
-      users.forEach((user) => { if (user.key) uids.push(user.key); });
-      await createUserNotifications(uids, title, description, "BROADCAST");
-      await sendPush(tokens, title, description, { type: "BROADCAST", notificationId: item.key });
+    // FIX (notifications): the Admin app writes announcements to
+    // /announcements (AdminActivity -> FirebaseRepository.publishAnnouncement)
+    // while this worker previously ONLY read /broadcast_notifications
+    // (written by RoleAdminActivity). That is why most admin "broadcasts"
+    // never reached anyone's phone. Both sources are now processed here.
+    const sources = [
+      { path: "broadcast_notifications", titleField: "title", bodyField: "description" },
+      { path: "announcements", titleField: "title", bodyField: "message" },
+    ];
+    for (const source of sources) {
+      const snapshot = await db.ref(source.path).once("value");
+      const jobs = [];
+      snapshot.forEach((item) => {
+        if (item.child("pushSent").val() !== true) jobs.push(item);
+      });
+      for (const item of jobs) {
+        const claimed = await db.ref(`${source.path}/${item.key}/pushSent`)
+          .transaction((current) => current === true ? undefined : true);
+        if (!claimed.committed) continue;
+
+        const title = String(item.child(source.titleField).val() || "STARX24");
+        const description = String(item.child(source.bodyField).val() || "");
+        // Scheduled announcements should not fire before their time.
+        const scheduledAt = Number(item.child("scheduledAt").val() || 0);
+        if (source.path === "announcements" && scheduledAt > Date.now()) {
+          // Undo the claim so a future tick can pick it up at the right time.
+          await db.ref(`${source.path}/${item.key}/pushSent`).set(false);
+          continue;
+        }
+
+        // TOURNAMENT/TEAM targeted announcements only go to relevant users.
+        const targetType = String(item.child("targetType").val() || "ALL");
+        let uids = [];
+        if (targetType === "ALL" || source.path === "broadcast_notifications") {
+          const users = await db.ref("users").once("value");
+          users.forEach((user) => { if (user.key) uids.push(user.key); });
+        } else if (targetType === "TOURNAMENT") {
+          const matchId = String(item.child("targetId").val() || "");
+          if (matchId) {
+            const matchSnap = await db.ref(`tournaments/${matchId}`).once("value");
+            uids = await getJoinedUids(matchSnap);
+          }
+        } else if (targetType === "TEAM") {
+          // Fall back to all users; team member lists are not stored centrally.
+          const users = await db.ref("users").once("value");
+          users.forEach((user) => { if (user.key) uids.push(user.key); });
+        }
+        if (!uids.length) {
+          await db.ref(`${source.path}/${item.key}/pushSent`).set(true);
+          continue;
+        }
+
+        const tokens = await Promise.all(uids.map(async (uid) => {
+          const token = (await db.ref(`users/${uid}/fcmToken`).once("value")).val();
+          return typeof token === "string" && token.trim() ? token : null;
+        }));
+        await createUserNotifications(uids, title, description, "BROADCAST",
+          { announcementId: item.key });
+        await sendPush(tokens.filter(Boolean), title, description,
+          { type: "BROADCAST", announcementId: item.key });
+      }
     }
   } catch (error) {
     console.error("broadcast worker error", error.message);
@@ -1016,6 +1088,40 @@ app.post("/admin/approveWithdrawal", requireAdmin(isMasterOrPayment), async (req
   }
 });
 
+// ADMIN PUSH RELAY — the Android ADMIN app calls this instead of talking to
+// fcm.googleapis.com directly. Previously the admin APK needed
+// assets/service-account.json (the Firebase private key!) bundled inside it,
+// which was both missing from the repo and a security hole if it ever leaked.
+// The service account now lives ONLY on Render, and the admin app just asks
+// this endpoint to send the push on its behalf (authenticated via its
+// Firebase ID token + active admin role, exactly like the other admin calls).
+app.post("/admin/sendPush", requireAdmin(() => true), async (req, res) => {
+  const rawTokens = Array.isArray(req.body?.tokens) ? req.body.tokens : [];
+  const tokens = rawTokens.map((t) => String(t || "").trim()).filter(Boolean);
+  const title = String(req.body?.title || "").trim();
+  const body = String(req.body?.body || "").trim();
+  const type = String(req.body?.type || "ROOM_RELEASED").trim();
+  if (!tokens.length || !title) {
+    return res.status(400).json({ error: "tokens and title are required" });
+  }
+  if (tokens.length > 500) {
+    return res.status(400).json({ error: "Too many tokens (max 500 per call)" });
+  }
+  try {
+    const response = await admin.messaging().sendEachForMulticast({
+      tokens,
+      notification: { title, body: body || title },
+      data: { type },
+    });
+    await logActivity(req.decoded.uid, "ADMIN_PUSH",
+      `${title} • ${response.successCount}/${tokens.length} devices • type=${type}`);
+    return res.status(200).json({ sent: response.successCount, total: tokens.length });
+  } catch (error) {
+    console.error("sendPush relay error", error.message);
+    return res.status(500).json({ error: "Could not send push" });
+  }
+});
+
 // Lets a player back out of a match they haven't started yet: frees their
 // slot(s), refunds the entry fee, and removes them from both the tournaments
 // and matches mirrors (joinMatch above writes to both, so this undoes both).
@@ -1097,6 +1203,32 @@ setInterval(processCoinApprovals, 15_000);
 processRoomReleases();
 processBroadcasts();
 processCoinApprovals();
+
+// SLOT RECONCILER — joinedSlots used to drift from the real slotIndex claims
+// (admin hand-edits, partial legacy joins, mirrored writes). Every minute the
+// server recounts tournaments/{id}/slotIndex and repairs any mismatch so the
+// fill bar / "spots left" / FULL badge on every device stays truthful.
+let slotReconcilerRunning = false;
+async function reconcileJoinedSlots() {
+  if (slotReconcilerRunning) return;
+  slotReconcilerRunning = true;
+  try {
+    const snapshot = await db.ref("tournaments").once("value");
+    snapshot.forEach((matchSnapshot) => {
+      const claimed = matchSnapshot.child("slotIndex").numChildren();
+      const current = Number(matchSnapshot.child("joinedSlots").val() || 0);
+      if (Number.isInteger(claimed) && claimed >= 0 && claimed !== current) {
+        db.ref(`tournaments/${matchSnapshot.key}/joinedSlots`).set(claimed).catch(() => {});
+      }
+    });
+  } catch (error) {
+    console.error("slot reconciler error", error.message);
+  } finally {
+    slotReconcilerRunning = false;
+  }
+}
+setInterval(reconcileJoinedSlots, 60_000);
+reconcileJoinedSlots();
 
 // Render's free plan puts the service to sleep after ~15 minutes with no
 // inbound traffic; the next real request then pays a 30-60s cold-start
