@@ -726,6 +726,23 @@ app.post("/joinMatch", moneyLimiter, async (req, res) => {
 
     const perSlotFee = Math.max(0, Number(tournament.entryFeeCoins || 0));
 
+    // Warm-sync guard (root cause of "shows plenty of coins but still
+    // rejects the join"): admin.database().ref(path).transaction() can invoke
+    // its update callback SPECULATIVELY with current === null on its very
+    // first attempt if this server process has never synced that exact path
+    // before — which is common right after a Render cold start (the same
+    // cold start the client already warns about as "Server is waking up").
+    // The debit callback below correctly treats a genuinely-missing wallet as
+    // 0 balance and aborts — but when that null is just "not synced yet" and
+    // not the real value, the SDK is NOT allowed to retry, because returning
+    // undefined from the callback is an explicit "abort the whole
+    // transaction" signal, not a "try again" signal. A plain .once("value")
+    // read on the exact same ref right before starting the transaction forces
+    // a real round-trip to the database first, so by the time .transaction()
+    // runs, the SDK already has the authoritative wallet object cached and
+    // the callback's first invocation sees the real balance, not a stale null.
+    await walletRef.once("value").catch(() => null);
+
     const claimedSlotNumbers = [];
     if (requestedSlots.length > 0) {
       // Specific slots picked by the player — claim every one of them, in
@@ -979,6 +996,10 @@ app.post("/requestWithdrawal", moneyLimiter, async (req, res) => {
     }
 
     const walletRef = db.ref(`users/${uid}/wallet`);
+    // Same warm-sync guard as /joinMatch — see the comment there. Forces a
+    // real read before the transaction so its callback never fires on a
+    // stale/null local cache right after a Render cold start.
+    await walletRef.once("value").catch(() => null);
     const debit = await walletRef.transaction((current) => {
       const wallet = current && typeof current === "object" ? { ...current } : {};
       const balance = Number(wallet.balance || 0);
