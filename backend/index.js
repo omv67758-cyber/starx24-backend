@@ -717,10 +717,29 @@ app.post("/joinMatch", moneyLimiter, async (req, res) => {
     // meant to be a single entry. A transaction on participantRef is how
     // Firebase guarantees only one concurrent request can "win" — every other
     // one is told already_registered before any coins move.
-    const reservation = await participantRef.transaction((current) =>
-      current == null ? { userId: decoded.uid, status: "RESERVING" } : undefined);
+    let reservation = await participantRef.transaction((current) =>
+      current == null ? { userId: decoded.uid, status: "RESERVING", reservedAt: Date.now() } : undefined);
     if (!reservation.committed) {
-      return res.status(200).json({ status: "already_registered" });
+      // A "RESERVING" placeholder with no real registration behind it is a
+      // ghost: the request that created it died before it could either
+      // finish (write the real REGISTERED record) or clean up after itself
+      // (e.g. the server process restarted mid-request during a deploy).
+      // Without this check, that ghost blocks the player from ever joining
+      // this match again — "already registered" forever, with 0 slots ever
+      // actually filled. Any RESERVING record older than 2 minutes is safe
+      // to treat as abandoned: reservation + debit + registration together
+      // normally complete in well under a second.
+      const existingStatus = String(reservation.snapshot?.val()?.status || "");
+      const reservedAt = Number(reservation.snapshot?.val()?.reservedAt || 0);
+      const isStaleGhost = existingStatus === "RESERVING" && (Date.now() - reservedAt) > 2 * 60 * 1000;
+      if (isStaleGhost) {
+        await participantRef.remove().catch(() => {});
+        reservation = await participantRef.transaction((current) =>
+          current == null ? { userId: decoded.uid, status: "RESERVING", reservedAt: Date.now() } : undefined);
+      }
+      if (!reservation.committed) {
+        return res.status(200).json({ status: "already_registered" });
+      }
     }
     reserved = true;
 
