@@ -38,6 +38,10 @@
           ".write": "auth != null && auth.uid === $uid",
           ".validate": "newData.isString() && newData.val().length < 64"
         },
+        "photoUrl": {
+          ".write": "auth != null && auth.uid === $uid",
+          ".validate": "newData.isString() && newData.val().length < 500"
+        },
         "coins": {
           ".write": "auth != null && (auth.token.email === 'fflueclark@gmail.com' || (root.child('admin_sessions').child(auth.uid).child('key').val() != null ? root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()) : root.child('x_none')).child('role').val() === 'MASTER_ADMIN')"
         },
@@ -215,6 +219,17 @@
     "announcements": {
       ".read": "auth != null",
       ".write": "auth != null && (auth.token.email === 'fflueclark@gmail.com' || (root.child('admin_sessions').child(auth.uid).child('key').val() != null ? root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()) : root.child('x_none')).child('active').val() === true)"
+    },
+    "banners": {
+      ".read": "auth != null",
+      ".indexOn": [
+        "displayOrder",
+        "active"
+      ],
+      "$bannerId": {
+        ".write": "auth != null && (auth.token.email === 'fflueclark@gmail.com' || (root.child('admin_sessions').child(auth.uid).child('key').val() != null ? root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()) : root.child('x_none')).child('active').val() === true)",
+        ".validate": "newData.hasChildren(['title','subtitle','imageUrl','displayOrder','createdAt','active']) && newData.child('title').isString() && newData.child('title').val().length <= 120 && newData.child('subtitle').isString() && newData.child('subtitle').val().length <= 240 && newData.child('imageUrl').isString() && newData.child('imageUrl').val().length <= 2000 && newData.child('displayOrder').isNumber() && newData.child('displayOrder').val() >= 0 && newData.child('createdAt').isNumber() && newData.child('active').isBoolean()"
+      }
     },
     "appConfig": {
       ".read": "auth != null",
