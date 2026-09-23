@@ -808,7 +808,7 @@ app.post("/joinMatch", moneyLimiter, async (req, res) => {
       // reports — captures exactly what the transaction saw at the moment it
       // ran, since that's the one thing a post-failure re-read can't recover.
       let sawDuringTransaction = null;
-      let debit = await walletRef.transaction((current) => {
+      const debit = await walletRef.transaction((current) => {
         const wallet = current && typeof current === "object" ? { ...current } : {};
         const balance = Number(wallet.balance || 0);
         sawDuringTransaction = { rawCurrent: current, parsedBalance: balance };
@@ -816,29 +816,6 @@ app.post("/joinMatch", moneyLimiter, async (req, res) => {
         wallet.balance = balance - entryFee;
         return wallet;
       });
-      // Belt-and-braces retry: the warm-sync guard above (walletRef.once()
-      // before the transaction) closes the *usual* cold-start race, but a
-      // transaction can still abort on a stale local cache in rarer cases
-      // (e.g. another write landing on this exact ref in the tiny window
-      // between the guard read and the transaction starting). Rather than
-      // fail the player with a wrong "insufficient coins" message when they
-      // demonstrably have enough, force one more real round-trip read and,
-      // if that confirms the balance is actually sufficient, retry the debit
-      // transaction exactly once before giving up for real.
-      if (!debit.committed) {
-        const recheckSnap = await walletRef.child("balance").once("value").catch(() => null);
-        const recheckBalance = recheckSnap ? Number(recheckSnap.val() || 0) : 0;
-        if (Number.isFinite(recheckBalance) && recheckBalance >= entryFee) {
-          debit = await walletRef.transaction((current) => {
-            const wallet = current && typeof current === "object" ? { ...current } : {};
-            const balance = Number(wallet.balance || 0);
-            sawDuringTransaction = { rawCurrent: current, parsedBalance: balance, retried: true };
-            if (!Number.isFinite(balance) || balance < entryFee) return;
-            wallet.balance = balance - entryFee;
-            return wallet;
-          });
-        }
-      }
       if (!debit.committed) {
         for (const ref of claimedSlotRefs) await ref.transaction((current) => current === decoded.uid ? null : undefined).catch(() => {});
         await participantRef.remove().catch(() => {});
