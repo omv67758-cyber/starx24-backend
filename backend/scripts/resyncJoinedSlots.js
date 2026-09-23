@@ -71,4 +71,3 @@ main().catch((error) => {
   console.error("resyncJoinedSlots failed:", error.message);
   process.exit(1);
 });
-
