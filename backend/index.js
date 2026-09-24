@@ -10,6 +10,16 @@
  * to this service, which creates and verifies orders with the Firebase Admin SDK.
  */
 
+// Some container hosts (Railway included) advertise IPv6 but don't actually
+// route it, so Node's built-in fetch() tries the IPv6 address first, times
+// out/refuses, and reports it as a generic "fetch failed" with the real
+// cause hidden. Preferring IPv4 avoids that dead-end entirely.
+try {
+  require("node:dns").setDefaultResultOrder("ipv4first");
+} catch (_e) {
+  // Older Node without this API — harmless to skip.
+}
+
 const express = require("express");
 const admin = require("firebase-admin");
 const rateLimit = require("express-rate-limit");
@@ -249,7 +259,11 @@ app.post("/createOrder", moneyLimiter, async (req, res) => {
       payment_url: data.payment_url,
     });
   } catch (error) {
-    console.error("createOrder error", error.message);
+    // Node's fetch() wraps low-level network errors (DNS failure, refused
+    // connection, TLS problems, IPv6 routing issues on some hosts) inside a
+    // generic "fetch failed" message and hides the real reason in
+    // error.cause. Logging the cause is the only way to actually see why.
+    console.error("createOrder error", error.message, error.cause || "");
     await orderRef.update({ status: "create_failed" }).catch(() => {});
     return res.status(500).json({ error: "Payment service could not save the order. Please try again." });
   }
