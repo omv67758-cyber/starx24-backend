@@ -823,6 +823,9 @@ app.post("/joinMatch", moneyLimiter, async (req, res) => {
       // ran, since that's the one thing a post-failure re-read can't recover.
       let sawDuringTransaction = null;
       const debit = await walletRef.transaction((current) => {
+        // FIX: first call gets a local guess (null). Returning undefined would
+        // ABORT (not retry). Return null so Firebase fetches the real wallet and retries.
+        if (current === null) return current;
         const wallet = current && typeof current === "object" ? { ...current } : {};
         const balance = Number(wallet.balance || 0);
         sawDuringTransaction = { rawCurrent: current, parsedBalance: balance };
@@ -1034,6 +1037,8 @@ app.post("/requestWithdrawal", moneyLimiter, async (req, res) => {
     // stale/null local cache right after a Render cold start.
     await walletRef.once("value").catch(() => null);
     const debit = await walletRef.transaction((current) => {
+      // FIX: same null-guess issue as joinMatch — return null so SDK retries with real data.
+      if (current === null) return current;
       const wallet = current && typeof current === "object" ? { ...current } : {};
       const balance = Number(wallet.balance || 0);
       if (!Number.isFinite(balance) || balance < amount) return;
