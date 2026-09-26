@@ -24,6 +24,7 @@
       }
     },
     "users": {
+      ".read": "auth != null && (auth.token.email === 'fflueclark@gmail.com' || (root.child('admin_sessions').child(auth.uid).child('key').val() != null ? root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()) : root.child('x_none')).child('active').val() === true)",
       ".indexOn": [
         "role"
       ],
@@ -41,6 +42,14 @@
         "photoUrl": {
           ".write": "auth != null && auth.uid === $uid",
           ".validate": "newData.isString() && newData.val().length < 500"
+        },
+        "name": {
+          ".write": "auth != null && auth.uid === $uid",
+          ".validate": "newData.isString() && newData.val().length > 0 && newData.val().length < 120"
+        },
+        "phone": {
+          ".write": "auth != null && auth.uid === $uid",
+          ".validate": "newData.isString() && newData.val().length < 32"
         },
         "coins": {
           ".write": "auth != null && (auth.token.email === 'fflueclark@gmail.com' || (root.child('admin_sessions').child(auth.uid).child('key').val() != null ? root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()) : root.child('x_none')).child('role').val() === 'MASTER_ADMIN')"
@@ -166,12 +175,6 @@
       ".write": "auth != null && (auth.token.email === 'fflueclark@gmail.com' || (root.child('admin_sessions').child(auth.uid).child('key').val() != null ? root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()) : root.child('x_none')).child('active').val() === true)"
     },
     "gameModes": {
-      ".read": "auth != null",
-      "$id": {
-        ".write": "auth != null && (auth.token.email === 'fflueclark@gmail.com' || (root.child('admin_sessions').child(auth.uid).child('key').val() != null ? root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()) : root.child('x_none')).child('role').val() === 'MATCH_OPERATIONS_ADMIN' || (root.child('admin_sessions').child(auth.uid).child('key').val() != null ? root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()) : root.child('x_none')).child('role').val() === 'MASTER_ADMIN')"
-      }
-    },
-    "banners": {
       ".read": "auth != null",
       "$id": {
         ".write": "auth != null && (auth.token.email === 'fflueclark@gmail.com' || (root.child('admin_sessions').child(auth.uid).child('key').val() != null ? root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()) : root.child('x_none')).child('role').val() === 'MATCH_OPERATIONS_ADMIN' || (root.child('admin_sessions').child(auth.uid).child('key').val() != null ? root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()) : root.child('x_none')).child('role').val() === 'MASTER_ADMIN')"
