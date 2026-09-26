@@ -20,6 +20,20 @@ try {
   // Older Node without this API — harmless to skip.
 }
 
+// dns.setDefaultResultOrder above only reorders dns.lookup() results — it
+// does NOT stop Node's fetch()/undici from still attempting a resolved IPv6
+// address if the host has one (confirmed in production logs: ENETUNREACH on
+// ZapUPI's IPv6 address even with ipv4first set). Forcing every fetch() in
+// this process onto IPv4-only sockets removes that dead-end attempt
+// entirely, instead of just deprioritizing it.
+try {
+  const { Agent, setGlobalDispatcher } = require("undici");
+  setGlobalDispatcher(new Agent({ connect: { family: 4 } }));
+} catch (_e) {
+  // If undici isn't resolvable for some reason, fall through — the
+  // ipv4first dns setting above still applies as a partial mitigation.
+}
+
 const express = require("express");
 const admin = require("firebase-admin");
 const rateLimit = require("express-rate-limit");
@@ -166,8 +180,58 @@ function validOrderId(orderId) {
   return typeof orderId === "string" && /^STARX[0-9]+_[a-z0-9]{6}$/.test(orderId);
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * fetch() wrapped with an explicit timeout (Node's fetch has no default one,
+ * so a stalled connection would otherwise hang until the client gives up)
+ * and a few retries on NETWORK-level failures only — DNS hiccups, connection
+ * resets, the odd Render/ZapUPI cold-start blip. A response that actually
+ * comes back (even an error one, e.g. "invalid key") is returned as-is and
+ * is never retried, since retrying a real rejection wouldn't change it.
+ */
+async function fetchWithRetry(url, options, { attempts = 4, timeoutMs = 10_000 } = {}) {
+  let lastError;
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const response = await fetch(url, { ...options, signal: controller.signal });
+      clearTimeout(timer);
+      return response;
+    } catch (error) {
+      clearTimeout(timer);
+      lastError = error;
+      if (attempt < attempts) {
+        // 500ms, 1500ms, 4500ms — gives a short-lived network blip real
+        // room to clear without making the user wait too long overall.
+        await sleep(500 * Math.pow(3, attempt - 1));
+      }
+    }
+  }
+  throw lastError;
+}
+
+/** Firebase RTDB writes can also hit the same transient network wobble as
+ *  the ZapUPI call — retry a couple of times before giving up on saving
+ *  the order, instead of failing the whole request on the first blip. */
+async function withRetry(fn, attempts = 3) {
+  let lastError;
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    try {
+      return await fn();
+    } catch (error) {
+      lastError = error;
+      if (attempt < attempts) await sleep(300 * Math.pow(3, attempt - 1));
+    }
+  }
+  throw lastError;
+}
+
 async function createZapupiOrder(orderId, amount, mobile) {
-  const response = await fetch(CREATE_ORDER_URL, {
+  const response = await fetchWithRetry(CREATE_ORDER_URL, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -199,6 +263,12 @@ function paymentProviderError(data, statusCode) {
   if (/key/i.test(providerMessage) && /(missing|expired|inactive|disabled)/i.test(providerMessage)) {
     return "Payment gateway key is not active. Check ZAPUPI_KEY in Render.";
   }
+  if (/insufficient.*(topup|balance)/i.test(providerMessage) || /topup.*(balance|insufficient)/i.test(providerMessage)) {
+    // Not a network/code problem at all: ZapUPI's merchant wallet itself is
+    // out of prepaid balance, so no retry will ever fix this — it needs a
+    // top-up on the ZapUPI dashboard before orders can be created again.
+    return "Payment gateway balance is exhausted. Please top up the ZapUPI merchant account.";
+  }
   if (providerMessage) {
     console.error("ZapUPI provider message", { statusCode, providerMessage });
   }
@@ -217,8 +287,9 @@ app.post("/createOrder", moneyLimiter, async (req, res) => {
   }
 
   const amount = Number(req.body?.amount);
-  if (!Number.isInteger(amount) || amount < 1 || amount > 100000) {
-    return res.status(400).json({ error: "Invalid amount" });
+  // Add Money limits: minimum ₹10, maximum ₹10000 per payment.
+  if (!Number.isInteger(amount) || amount < 10 || amount > 10000) {
+    return res.status(400).json({ error: "Amount must be between 10 and 10000" });
   }
 
   const mobile = String(req.body?.mobile || "").trim();
@@ -230,14 +301,23 @@ app.post("/createOrder", moneyLimiter, async (req, res) => {
   const orderRef = db.ref(`orders/${orderId}`);
 
   try {
-    await orderRef.set({
+    await withRetry(() => orderRef.set({
       uid: decoded.uid,
       amount,
       status: "pending",
       mode: zapupiMode,
       createdAt: admin.database.ServerValue.TIMESTAMP,
-    });
+    }));
+  } catch (error) {
+    // Every retry of the Firebase write itself failed — this is the one
+    // case that truly deserves "could not save the order", so log the real
+    // cause (DNS/connection/TLS details Node hides in error.cause) for
+    // diagnosis and tell the user plainly.
+    console.error("createOrder: order write failed after retries", error.message, error.cause || "");
+    return res.status(500).json({ error: "Payment service could not save the order. Please try again." });
+  }
 
+  try {
     const { response, data } = await createZapupiOrder(orderId, amount, mobile);
     const providerStatus = String(data?.status || "").trim().toLowerCase();
     if (!response.ok || providerStatus !== "success" || !data.payment_url) {
@@ -259,13 +339,18 @@ app.post("/createOrder", moneyLimiter, async (req, res) => {
       payment_url: data.payment_url,
     });
   } catch (error) {
+    // The order itself is already saved as "pending" at this point, so this
+    // catch only covers the ZapUPI call still failing after all of
+    // fetchWithRetry's attempts (real network outage, not a cold-start blip).
     // Node's fetch() wraps low-level network errors (DNS failure, refused
     // connection, TLS problems, IPv6 routing issues on some hosts) inside a
     // generic "fetch failed" message and hides the real reason in
     // error.cause. Logging the cause is the only way to actually see why.
-    console.error("createOrder error", error.message, error.cause || "");
+    console.error("createOrder: ZapUPI call failed after retries", error.message, error.cause || "");
     await orderRef.update({ status: "create_failed" }).catch(() => {});
-    return res.status(500).json({ error: "Payment service could not save the order. Please try again." });
+    return res.status(502).json({
+      error: "Could not reach the payment provider. Please check your internet and try again.",
+    });
   }
 });
 
@@ -273,11 +358,21 @@ app.post("/createOrder", moneyLimiter, async (req, res) => {
 app.get("/zapupiWebhook", (_req, res) => res.status(200).send("ok"));
 
 async function getVerifiedOrderStatus(orderId) {
-  const response = await fetch(ORDER_STATUS_URL, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ zap_key: zapupiKey, order_id: orderId }),
-  });
+  let response;
+  try {
+    response = await fetchWithRetry(ORDER_STATUS_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ zap_key: zapupiKey, order_id: orderId }),
+    });
+  } catch (error) {
+    // Network kept failing even after retries — treat as "unknown for now"
+    // rather than throwing, so the caller reports "pending" and the app's
+    // next onResume (or the webhook's own retry) tries again later instead
+    // of the request blowing up.
+    console.error("getVerifiedOrderStatus failed after retries", error.message, error.cause || "");
+    return {};
+  }
   const text = await response.text();
   try {
     return response.ok ? JSON.parse(text) : {};
@@ -423,14 +518,23 @@ async function getJoinedUids(matchSnapshot) {
   return uids;
 }
 
+// Writes into the SAME shared /notifications inbox the Android app's bell
+// (NotificationsActivity) reads — it filters that node by a "message" field
+// and a userId child, matching a row to a user. This used to write to
+// users/{uid}/notifications instead, a path nothing in the app ever reads,
+// so wallet-credit, room-release, broadcast and withdrawal paid/rejected
+// notices were all silently invisible in the bell (and also never carried a
+// device push from that inbox, since the push above is the only thing that
+// reached the phone).
 async function createUserNotifications(uids, title, description, type, data = {}) {
   const updates = {};
   for (const uid of uids) {
-    const notificationId = db.ref(`users/${uid}/notifications`).push().key;
+    const notificationId = db.ref("notifications").push().key;
     if (!notificationId) continue;
-    updates[`users/${uid}/notifications/${notificationId}`] = {
+    updates[`notifications/${notificationId}`] = {
+      userId: uid,
       title,
-      description,
+      message: description,
       type,
       createdAt: admin.database.ServerValue.TIMESTAMP,
       read: false,
@@ -718,8 +822,11 @@ app.post("/joinMatch", moneyLimiter, async (req, res) => {
     // (not just in the client's dialog) so a join request can't slip in
     // with fewer paid entries than the team actually needs.
     const teamSize = Math.max(1, Number(tournament.teamSize || 1));
-    if (teamSize > 1 && quantity !== teamSize) {
-      return res.status(400).json({ error: `This is a ${teamSize}-player team match — select exactly ${teamSize} slots` });
+    // A player may enter a DUO/SQUAD alone or bring the full team. The
+    // participant record still carries the match team size, while quantity
+    // represents the number of slots this user is actually filling.
+    if (quantity < 1 || quantity > teamSize) {
+      return res.status(400).json({ error: `Select between 1 and ${teamSize} slot(s) for this team match` });
     }
 
     // Reserve this user's registration FIRST, atomically. The old code checked
@@ -915,6 +1022,50 @@ app.post("/joinMatch", moneyLimiter, async (req, res) => {
     // response comes back, not before.
     return res.status(200).json({ status: "registered", entryFeeCoins: entryFee, slotNumber, slotNumbers: claimedSlotNumbers });
   } catch (error) {
+    // Om's bug report: "join fails for whatever reason -> coin should NOT be
+    // deducted and the slot should NOT show as full." The debit + slot claims
+    // + final db.ref().update(updates) above are each awaited individually —
+    // if db.ref().update() actually reached Firebase and committed on the
+    // server, but the Node process then lost the connection before it got the
+    // ack back (Render/Railway network hiccup, admin SDK socket drop, etc.),
+    // the `await` throws here even though the write is already live. Blindly
+    // rolling back in that situation is itself the bug: it would free the
+    // slot back to "open" and refund the coins while a REGISTERED participant
+    // record still sits there pointing at that same slot — exactly the
+    // joinedSlots/slotIndex drift the reconciler further down this file has
+    // to keep correcting for. So before undoing anything, re-read the
+    // participant record straight from the database (bypassing whatever
+    // just failed) and only compensate if it genuinely never got written.
+    let alreadyRegistered = false;
+    try {
+      const recheck = await participantRef.once("value");
+      alreadyRegistered = recheck.exists() && String(recheck.val()?.status || "") === "REGISTERED";
+    } catch (_recheckError) {
+      // Couldn't even confirm — fall through to the normal rollback below
+      // rather than leaving the player in limbo with no response at all.
+    }
+
+    if (alreadyRegistered) {
+      console.error("joinMatch post-error recheck: write had actually committed, skipping rollback", {
+        uid: decoded.uid, tournamentId,
+      });
+      // Coins were correctly charged once and the slot(s) are correctly held —
+      // report it as a success instead of telling the player it failed.
+      const registeredSnap = await participantRef.once("value").catch(() => null);
+      const registeredVal = registeredSnap ? registeredSnap.val() || {} : {};
+      const finalSlots = Array.isArray(registeredVal.slotNumbers) && registeredVal.slotNumbers.length
+        ? registeredVal.slotNumbers
+        : [registeredVal.slotNumber].filter(Boolean);
+      return res.status(200).json({
+        status: "registered",
+        entryFeeCoins: Number(registeredVal.entryFeeCoins || 0),
+        slotNumber: registeredVal.slotNumber,
+        slotNumbers: finalSlots,
+      });
+    }
+
+    // Genuinely never registered — safe to undo every side effect so the
+    // player ends up exactly where they started: full balance, slot open.
     if (debitedAmount > 0) {
       await walletRef.transaction((current) => {
         const wallet = current && typeof current === "object" ? { ...current } : {};
@@ -1099,9 +1250,26 @@ app.post("/admin/approveWithdrawal", requireAdmin(isMasterOrPayment), async (req
     const withdrawal = snapshot.val();
     if (!withdrawal) return res.status(404).json({ error: "Withdrawal not found" });
 
-    // Transaction guard so two admins tapping at once can't both resolve it.
-    const claim = await db.ref(`withdrawals/${withdrawalId}/status`)
-      .transaction((current) => current === "PENDING" ? "PROCESSING" : undefined);
+    // Transaction guard so two admins tapping at once can't both resolve it. Also
+    // self-heals a status stuck at PROCESSING — previously, ANY failure after this
+    // claim (a bad FCM token, a network blip, etc.) left the record permanently
+    // stuck here, since nothing ever set it back to PENDING; every retry then hit
+    // "already resolved" forever even though the record was never actually paid or
+    // rejected. A PROCESSING claim now expires after a couple of minutes so a
+    // stuck record can be retried instead of dying silently.
+    const STALE_PROCESSING_MS = 2 * 60 * 1000;
+    const nowMs = Date.now();
+    const claim = await db.ref(`withdrawals/${withdrawalId}`).transaction((current) => {
+      if (!current) return current;
+      if (current.status === "PENDING") {
+        return { ...current, status: "PROCESSING", processingAt: nowMs };
+      }
+      if (current.status === "PROCESSING"
+          && nowMs - Number(current.processingAt || 0) > STALE_PROCESSING_MS) {
+        return { ...current, status: "PROCESSING", processingAt: nowMs };
+      }
+      return; // abort — genuinely mid-flight right now, or already PAID/REJECTED
+    });
     if (!claim.committed) {
       return res.status(409).json({ error: "This withdrawal was already resolved" });
     }
@@ -1142,8 +1310,81 @@ app.post("/admin/approveWithdrawal", requireAdmin(isMasterOrPayment), async (req
     await logActivity(req.decoded.uid, "WITHDRAWAL_" + action, `${withdrawalId} • user ${userId} • ${amount} coins`);
     return res.status(200).json({ status: action });
   } catch (error) {
+    // If we'd already claimed PROCESSING but failed before the status was flipped
+    // to a final PAID/REJECTED (e.g. the wallet-locked-coins transaction threw),
+    // put it straight back to PENDING instead of making the admin wait out the
+    // stale-claim window above.
+    await db.ref(`withdrawals/${withdrawalId}/status`)
+      .transaction((current) => (current === "PROCESSING" ? "PENDING" : current))
+      .catch(() => {});
     console.error("approveWithdrawal error", error.message);
     return res.status(500).json({ error: "Could not resolve withdrawal" });
+  }
+});
+
+// Admin removes a resolved (PAID/REJECTED) withdrawal from the history list.
+// PENDING requests can never be deleted here — they still hold locked coins,
+// so they must go through approveWithdrawal (PAID/REJECTED) first, which is
+// what actually releases or returns those coins. This only clears the
+// already-settled record from both withdrawals/{id} and its
+// users/{uid}/withdrawals/{id} mirror once nothing financial is left to do.
+app.post("/admin/deleteWithdrawal", requireAdmin(isMasterOrPayment), async (req, res) => {
+  const withdrawalId = String(req.body?.withdrawalId || "").trim();
+  if (!withdrawalId) return res.status(400).json({ error: "withdrawalId is required" });
+
+  try {
+    const snapshot = await db.ref(`withdrawals/${withdrawalId}`).once("value");
+    const withdrawal = snapshot.val();
+    if (!withdrawal) return res.status(404).json({ error: "Withdrawal not found" });
+    if (String(withdrawal.status || "").toUpperCase() === "PENDING") {
+      return res.status(409).json({ error: "Resolve this request (Paid/Rejected) before deleting it" });
+    }
+
+    const updates = { [`withdrawals/${withdrawalId}`]: null };
+    if (withdrawal.userId) updates[`users/${withdrawal.userId}/withdrawals/${withdrawalId}`] = null;
+    await db.ref().update(updates);
+
+    await logActivity(req.decoded.uid, "WITHDRAWAL_DELETED",
+      `${withdrawalId} • user ${withdrawal.userId} • ${withdrawal.amount} coins`);
+    return res.status(200).json({ status: "deleted" });
+  } catch (error) {
+    console.error("deleteWithdrawal error", error.message);
+    return res.status(500).json({ error: "Could not delete withdrawal" });
+  }
+});
+
+// Admin-facing: wipe every already-settled (PAID/REJECTED) withdrawal record
+// in one go — used by the "Delete All History" button next to the per-row
+// delete on the Payments > Withdrawals screen. Same PENDING guard as the
+// single-delete route above: a still-open request is left untouched because
+// it still holds locked coins and must be resolved first.
+app.post("/admin/deleteAllWithdrawals", requireAdmin(isMasterOrPayment), async (req, res) => {
+  try {
+    const snapshot = await db.ref("withdrawals").once("value");
+    if (!snapshot.exists()) return res.status(200).json({ status: "deleted", count: 0 });
+
+    const updates = {};
+    let count = 0;
+    let skippedPending = 0;
+    snapshot.forEach((child) => {
+      const withdrawal = child.val() || {};
+      if (String(withdrawal.status || "").toUpperCase() === "PENDING") {
+        skippedPending += 1;
+        return;
+      }
+      updates[`withdrawals/${child.key}`] = null;
+      if (withdrawal.userId) updates[`users/${withdrawal.userId}/withdrawals/${child.key}`] = null;
+      count += 1;
+    });
+
+    if (count > 0) await db.ref().update(updates);
+
+    await logActivity(req.decoded.uid, "WITHDRAWAL_HISTORY_CLEARED",
+      `${count} record(s) deleted${skippedPending ? `, ${skippedPending} pending kept` : ""}`);
+    return res.status(200).json({ status: "deleted", count, skippedPending });
+  } catch (error) {
+    console.error("deleteAllWithdrawals error", error.message);
+    return res.status(500).json({ error: "Could not delete withdrawal history" });
   }
 });
 
