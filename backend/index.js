@@ -1547,19 +1547,33 @@ app.post("/requestCoinSupport", moneyLimiter, async (req, res) => {
 
   const upiId = String(req.body?.upiId || "").trim();
   const description = String(req.body?.description || "").trim();
-  const qrUrl = String(req.body?.qrUrl || "").trim();
+  const requestId = String(req.body?.requestId || "").trim();
   if (!validUpiId(upiId)) {
     return res.status(400).json({ error: "Enter a valid UPI ID (e.g. name@bank)" });
   }
   if (description.length < 10 || description.length > 500) {
     return res.status(400).json({ error: "Description 10 se 500 characters ki honi chahiye" });
   }
-  if (!/^https:\/\/\S{6,600}$/.test(qrUrl)) {
-    return res.status(400).json({ error: "QR image upload nahi hui, dobara try karo" });
+  // QR / payment screenshot app ne seedha Firebase (coin_support_images/{requestId}) me daal di hai;
+  // yahan sirf check karte hain ki wo isi user ki hai aur sahi JPEG hai.
+  if (!validCoinRequestId(requestId)) {
+    return res.status(400).json({ error: "Request id sahi nahi hai, dobara try karo" });
   }
-
   const uid = decoded.uid;
   try {
+    const imgSnap = await db.ref(`coin_support_images/${requestId}`).once("value");
+    const img = imgSnap.val();
+    if (!img || img.userId !== uid || typeof img.data !== "string") {
+      return res.status(400).json({ error: "QR image nahi mili, dobara bhejo" });
+    }
+    const imgBytes = Buffer.from(img.data, "base64");
+    if (!(imgBytes.length > 50 && imgBytes[0] === 0xff && imgBytes[1] === 0xd8 && imgBytes[2] === 0xff)) {
+      return res.status(400).json({ error: "QR image JPEG format me honi chahiye" });
+    }
+    if ((await db.ref(`coin_support/${requestId}`).once("value")).exists()) {
+      return res.status(409).json({ error: "Ye request pehle hi bheji ja chuki hai" });
+    }
+
     // Spam guard: ek time par max 3 pending requests.
     const mine = await db.ref(`users/${uid}/coinSupport`).once("value");
     let pending = 0;
@@ -1569,14 +1583,13 @@ app.post("/requestCoinSupport", moneyLimiter, async (req, res) => {
     }
 
     const user = (await db.ref(`users/${uid}`).once("value")).val() || {};
-    const requestId = db.ref("coin_support").push().key;
     const record = {
       userId: uid,
       userName: String(user.name || decoded.name || "Player").slice(0, 120),
       userEmail: String(user.email || decoded.email || "").slice(0, 200),
       userPhone: String(user.phone || "").slice(0, 32),
       upiId,
-      qrUrl,
+      hasQr: true,
       description,
       status: "PENDING",
       createdAt: admin.database.ServerValue.TIMESTAMP,
