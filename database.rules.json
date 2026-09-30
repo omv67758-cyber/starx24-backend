@@ -94,7 +94,7 @@
           "$uid": {
             ".read": "auth != null",
             ".write": "auth != null && (auth.token.email === 'fflueclark@gmail.com' || (root.child('admin_sessions').child(auth.uid).child('key').val() != null ? root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()) : root.child('x_none')).child('active').val() === true || (auth.uid === $uid && !data.exists()))",
-            ".validate": "newData.hasChildren(['userId','slotNumber','gameUid','gameName','slotCount']) && newData.child('userId').val() === auth.uid && newData.child('slotNumber').val() >= 1 && newData.child('slotNumber').val() <= (root.child('tournaments').child($matchId).child('totalSlots').val() == null ? 48 : root.child('tournaments').child($matchId).child('totalSlots').val()) && newData.child('gameUid').val() !== '' && newData.child('gameName').val() !== '' && newData.child('slotCount').val() >= 1 && newData.child('slotCount').val() <= 4 && (auth.token.email === 'fflueclark@gmail.com' || (root.child('admin_sessions').child(auth.uid).child('key').val() != null ? root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()) : root.child('x_none')).child('active').val() === true || root.child('tournaments').child($matchId).child('entryFeeCoins').val() == null || root.child('tournaments').child($matchId).child('entryFeeCoins').val() === 0)"
+            ".validate": "(auth.token.email === 'fflueclark@gmail.com' || (root.child('admin_sessions').child(auth.uid).child('key').val() != null ? root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()) : root.child('x_none')).child('active').val() === true || root.child('tournaments').child($matchId).child('startAt').val() == null || root.child('tournaments').child($matchId).child('startAt').val() == 0 || now < root.child('tournaments').child($matchId).child('startAt').val()) && newData.hasChildren(['userId','slotNumber','gameUid','gameName','slotCount']) && newData.child('userId').val() === auth.uid && newData.child('slotNumber').val() >= 1 && newData.child('slotNumber').val() <= (root.child('tournaments').child($matchId).child('totalSlots').val() == null ? 48 : root.child('tournaments').child($matchId).child('totalSlots').val()) && newData.child('gameUid').val() !== '' && newData.child('gameName').val() !== '' && newData.child('slotCount').val() >= 1 && newData.child('slotCount').val() <= 4 && (auth.token.email === 'fflueclark@gmail.com' || (root.child('admin_sessions').child(auth.uid).child('key').val() != null ? root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()) : root.child('x_none')).child('active').val() === true || root.child('tournaments').child($matchId).child('entryFeeCoins').val() == null || root.child('tournaments').child($matchId).child('entryFeeCoins').val() === 0)"
           }
         },
         "slotIndex": {
@@ -110,7 +110,7 @@
           ".read": "auth != null",
           "$uid": {
             ".write": "auth != null && (auth.token.email === 'fflueclark@gmail.com' || (root.child('admin_sessions').child(auth.uid).child('key').val() != null ? root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()) : root.child('x_none')).child('active').val() === true || (auth.uid === $uid && !data.exists()))",
-            ".validate": "newData.hasChildren(['joinedAt']) && (auth.token.email === 'fflueclark@gmail.com' || (root.child('admin_sessions').child(auth.uid).child('key').val() != null ? root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()) : root.child('x_none')).child('active').val() === true || root.child('tournaments').child($matchId).child('entryFeeCoins').val() == null || root.child('tournaments').child($matchId).child('entryFeeCoins').val() === 0)"
+            ".validate": "(auth.token.email === 'fflueclark@gmail.com' || (root.child('admin_sessions').child(auth.uid).child('key').val() != null ? root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()) : root.child('x_none')).child('active').val() === true || root.child('tournaments').child($matchId).child('startAt').val() == null || root.child('tournaments').child($matchId).child('startAt').val() == 0 || now < root.child('tournaments').child($matchId).child('startAt').val()) && newData.hasChildren(['joinedAt']) && (auth.token.email === 'fflueclark@gmail.com' || (root.child('admin_sessions').child(auth.uid).child('key').val() != null ? root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()) : root.child('x_none')).child('active').val() === true || root.child('tournaments').child($matchId).child('entryFeeCoins').val() == null || root.child('tournaments').child($matchId).child('entryFeeCoins').val() === 0)"
           }
         },
         "results": {
@@ -186,6 +186,15 @@
         ".read": "auth != null && ((root.child('admin_sessions').child(auth.uid).child('key').val() != null ? root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()) : root.child('x_none')).child('active').val() === true || data.child('userId').val() === auth.uid || data.child('uid').val() === auth.uid)",
         ".write": "auth != null && (auth.token.email === 'fflueclark@gmail.com' || (root.child('admin_sessions').child(auth.uid).child('key').val() != null ? root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()) : root.child('x_none')).child('role').val() === 'CUSTOMER_SUPPORT_ADMIN' || (root.child('admin_sessions').child(auth.uid).child('key').val() != null ? root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()) : root.child('x_none')).child('role').val() === 'MASTER_ADMIN' || (!data.exists() && newData.child('userId').val() === auth.uid))"
       }
+    },
+    "coin_support": {
+      ".read": "auth != null && (auth.token.email === 'fflueclark@gmail.com' || (root.child('admin_sessions').child(auth.uid).child('key').val() != null ? root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()) : root.child('x_none')).child('active').val() === true)",
+      ".write": false,
+      ".indexOn": [
+        "status",
+        "userId",
+        "createdAt"
+      ]
     },
     "withdrawals": {
       ".read": "auth != null && (auth.token.email === 'fflueclark@gmail.com' || (root.child('admin_sessions').child(auth.uid).child('key').val() != null ? root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()) : root.child('x_none')).child('role').val() === 'MASTER_ADMIN' || (root.child('admin_sessions').child(auth.uid).child('key').val() != null ? root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()) : root.child('x_none')).child('role').val() === 'PAYMENT_ADMIN')",
@@ -278,6 +287,18 @@
     "activity_logs": {
       ".read": "auth != null && (root.child('admin_sessions').child(auth.uid).child('key').val() != null ? root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()) : root.child('x_none')).child('active').val() === true",
       ".write": "auth != null && ((root.child('admin_sessions').child(auth.uid).child('key').val() != null ? root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()) : root.child('x_none')).child('active').val() === true || auth.token.email === 'fflueclark@gmail.com')"
+    },
+    "rank_drafts": {
+      ".read": "auth != null && (auth.token.email === 'fflueclark@gmail.com' || (root.child('admin_sessions').child(auth.uid).child('key').val() != null ? root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()) : root.child('x_none')).child('active').val() === true)",
+      ".write": "auth != null && (auth.token.email === 'fflueclark@gmail.com' || (root.child('admin_sessions').child(auth.uid).child('key').val() != null ? root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()) : root.child('x_none')).child('active').val() === true)"
+    },
+    "manual_coin_log": {
+      ".read": "auth != null && (root.child('admin_sessions').child(auth.uid).child('key').val() != null ? root.child('admin_keys').child(root.child('admin_sessions').child(auth.uid).child('key').val()) : root.child('x_none')).child('active').val() === true",
+      ".write": false,
+      ".indexOn": [
+        "uid",
+        "at"
+      ]
     }
   }
 }
