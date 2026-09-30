@@ -412,6 +412,22 @@ async function creditWalletOnce(order) {
       timestamp: admin.database.ServerValue.TIMESTAMP,
       status: "SUCCESS",
     });
+    // Also mirror this top-up into the top-level "deposits" node — this is
+    // the node the Admin Panel's Payment Management > "Add Money" tab reads
+    // (AdminActivity.loadPaymentsPage() -> FirebaseRepository.deposits()).
+    // Without this, real user top-ups never showed up there at all: they
+    // were only ever recorded under users/<uid>/wallet/transactions, which
+    // the admin table never looks at, so "Add Money" always stayed empty
+    // no matter how much money users actually added. Field names
+    // (userId/amount/status/createdAt) match what the admin table expects.
+    await db.ref("deposits").push({
+      userId: order.uid,
+      amount: Number(order.amount),
+      status: "APPROVED",
+      method: "UPI",
+      orderId: order.orderId,
+      createdAt: admin.database.ServerValue.TIMESTAMP,
+    });
     // FIX (notifications): the user should immediately see + hear about a
     // successful top-up. Previously only the wallet balance changed silently.
     try {
@@ -807,6 +823,11 @@ app.post("/joinMatch", moneyLimiter, async (req, res) => {
     const tournament = tournamentSnapshot.val() || {};
     if (String(tournament.status || "").toUpperCase() === "COMPLETED" || String(tournament.registrationStatus || "OPEN").toUpperCase() !== "OPEN" || tournament.active === false) {
       return res.status(409).json({ error: "Registration is closed for this match" });
+    }
+    // Start time passed -> match is ongoing, joining is closed even if slots are still empty.
+    const matchStartAt = Number(tournament.startAt || 0);
+    if (matchStartAt > 0 && Date.now() >= matchStartAt) {
+      return res.status(409).json({ error: "Match has started. Joining is closed." });
     }
     const totalSlots = Math.max(1, Number(tournament.totalSlots || 48));
     if (requestedSlots.some((n) => n > totalSlots)) {
@@ -1322,6 +1343,375 @@ app.post("/admin/approveWithdrawal", requireAdmin(isMasterOrPayment), async (req
   }
 });
 
+// Manual coin adjustment (User Management -> Coin Edit). Only MASTER / RESULTS_COINS admins.
+// Goes through the backend because database.rules.json only lets wallet.balance go DOWN
+// from a client, so an admin "add coins" could never be written directly from the app.
+// Every change is written to manual_coin_log (admin SDK only) so there is always a history.
+function isMasterOrResultsCoins(role) {
+  return role === "MASTER_ADMIN" || role === "SUPER_ADMIN" || role === "RESULTS_COINS_ADMIN";
+}
+
+app.post("/admin/adjustCoins", requireAdmin(isMasterOrResultsCoins), async (req, res) => {
+  const uid = String(req.body?.uid || "").trim();
+  const action = String(req.body?.action || "").trim().toUpperCase();
+  const amount = Number(req.body?.amount);
+  const reason = String(req.body?.reason || "").trim().slice(0, 200);
+  if (!uid || (action !== "ADD" && action !== "REMOVE")) {
+    return res.status(400).json({ error: "uid and action ('ADD' or 'REMOVE') are required" });
+  }
+  if (!Number.isInteger(amount) || amount <= 0 || amount > 1000000) {
+    return res.status(400).json({ error: "Amount must be a whole number greater than 0" });
+  }
+  if (!reason) return res.status(400).json({ error: "Please enter a reason" });
+
+  try {
+    const userSnap = await db.ref(`users/${uid}`).once("value");
+    if (!userSnap.exists()) return res.status(404).json({ error: "User not found" });
+    const user = userSnap.val() || {};
+
+    let before = 0;
+    let after = 0;
+    let insufficient = false;
+    const result = await db.ref(`users/${uid}/wallet`).transaction((current) => {
+      const wallet = current && typeof current === "object" ? { ...current } : {};
+      const balance = Number(wallet.balance || 0);
+      before = Number.isFinite(balance) ? balance : 0;
+      if (action === "REMOVE" && before < amount) {
+        insufficient = true;
+        return; // abort - never let a manual removal push a balance below zero
+      }
+      insufficient = false;
+      after = action === "ADD" ? before + amount : before - amount;
+      wallet.balance = after;
+      return wallet;
+    });
+    if (!result.committed) {
+      return res.status(insufficient ? 409 : 500).json({
+        error: insufficient ? `User only has ${before} coins, cannot remove ${amount}` : "Could not update coins",
+      });
+    }
+
+    const signed = action === "ADD" ? amount : -amount;
+    const logId = db.ref("manual_coin_log").push().key;
+    const txId = `manual_${logId}`;
+    const adminLabel = req.decoded.email || req.decoded.uid;
+    const updates = {
+      [`manual_coin_log/${logId}`]: {
+        uid,
+        userName: String(user.name || ""),
+        userEmail: String(user.email || ""),
+        action,
+        amount,
+        delta: signed,
+        balanceBefore: before,
+        balanceAfter: after,
+        reason,
+        adminUid: req.decoded.uid,
+        adminEmail: adminLabel,
+        at: admin.database.ServerValue.TIMESTAMP,
+      },
+      [`users/${uid}/wallet/transactions/${txId}`]: {
+        type: "ADMIN_ADJUSTMENT",
+        title: `${signed > 0 ? "+" : "-"}${amount} Coins (Admin)`,
+        description: reason,
+        amount,
+        status: "SUCCESS",
+        timestamp: admin.database.ServerValue.TIMESTAMP,
+      },
+    };
+    await db.ref().update(updates);
+
+    await createUserNotifications([uid],
+      action === "ADD" ? "Coins added" : "Coins removed",
+      action === "ADD"
+        ? `${amount} coins were added to your wallet by admin.`
+        : `${amount} coins were removed from your wallet by admin.`,
+      "COINS_ADJUSTED", { logId });
+    await logActivity(req.decoded.uid, "MANUAL_COINS_" + action,
+      `user ${uid} • ${signed > 0 ? "+" : ""}${signed} coins • ${before} -> ${after} • ${reason}`);
+    return res.status(200).json({ status: "OK", balanceBefore: before, balanceAfter: after, logId });
+  } catch (error) {
+    console.error("adjustCoins error", error.message);
+    return res.status(500).json({ error: "Could not adjust coins" });
+  }
+});
+
+// Leaderboard public hote hi match ke coins players ke wallet me jaate hain.
+// Amount kahin se type nahi hota: sirf tournaments/{id}/results/{uid}/coins (jo leaderboard me
+// dikhta hai) utna hi credit hota hai, aur sirf tab jab match RESULT_PUBLISHED ho.
+// match_coin_paid/{id}/{uid} (admin-SDK-only) yaad rakhta hai ki kitna already de diya gaya,
+// isliye Publish/Update dobara dabane par sirf DIFFERENCE credit/debit hota hai - double pay nahi.
+app.post("/admin/creditMatchCoins", requireAdmin(() => true), async (req, res) => {
+  const tournamentId = String(req.body?.tournamentId || "").trim();
+  if (!tournamentId || /[.#$\[\]\/]/.test(tournamentId)) {
+    return res.status(400).json({ error: "tournamentId is required" });
+  }
+  try {
+    const tSnap = await db.ref(`tournaments/${tournamentId}`).once("value");
+    if (!tSnap.exists()) return res.status(404).json({ error: "Match not found" });
+    const tournament = tSnap.val() || {};
+    if (String(tournament.status || "") !== "RESULT_PUBLISHED") {
+      return res.status(409).json({ error: "Leaderboard abhi public nahi hai - coins tab jaenge jab publish hoga" });
+    }
+    const title = String(tournament.title || tournament.name || "Match");
+    const rows = tournament.results && typeof tournament.results === "object" ? tournament.results : {};
+
+    let credited = 0, adjusted = 0, totalCoins = 0, unchanged = 0, failed = 0;
+    for (const uid of Object.keys(rows)) {
+      const target = Math.max(0, Math.floor(Number(rows[uid]?.coins) || 0));
+      const paidRef = db.ref(`match_coin_paid/${tournamentId}/${uid}`);
+
+      // Step 1: claim the difference atomically, so two taps / two admins can never double-pay.
+      let prev = 0;
+      const claim = await paidRef.transaction((current) => {
+        prev = Number(current) || 0;
+        if (prev === target) return; // nothing to pay -> abort
+        return target;
+      });
+      if (!claim.committed) { unchanged++; continue; }
+      const delta = target - prev;
+
+      // Step 2: move the wallet by that difference (never below 0).
+      let applied = 0;
+      const walletRes = await db.ref(`users/${uid}/wallet`).transaction((current) => {
+        const wallet = current && typeof current === "object" ? { ...current } : {};
+        const balance = Number(wallet.balance || 0);
+        const before = Number.isFinite(balance) ? balance : 0;
+        const after = Math.max(0, before + delta);
+        applied = after - before;
+        wallet.balance = after;
+        return wallet;
+      });
+      if (!walletRes.committed) {
+        await paidRef.set(prev || null).catch(() => {}); // give the claim back so a retry pays it
+        failed++;
+        continue;
+      }
+
+      const txId = prev === 0
+        ? `matchcoins_${tournamentId}_${uid}`
+        : `matchcoins_${tournamentId}_${uid}_${Date.now()}`;
+      const sign = applied >= 0 ? "+" : "-";
+      await db.ref().update({
+        [`users/${uid}/wallet/transactions/${txId}`]: {
+          type: "WINNING_REWARD",
+          matchId: tournamentId,
+          amount: Math.abs(applied),
+          title: `${sign}${Math.abs(applied)} coins \u2022 ${title}`,
+          description: prev === 0
+            ? `${title} \u2014 leaderboard coins`
+            : `${title} \u2014 leaderboard updated`,
+          status: "SUCCESS",
+          timestamp: admin.database.ServerValue.TIMESTAMP,
+        },
+      });
+      await createUserNotifications([uid],
+        prev === 0 ? "Coins added" : "Coins updated",
+        prev === 0
+          ? `${target} coins from ${title} were added to your wallet.`
+          : `Leaderboard update: your coins for ${title} are now ${target}.`,
+        "COINS_APPROVED", { matchId: tournamentId });
+      if (prev === 0) credited++; else adjusted++;
+      totalCoins += Math.max(0, applied);
+    }
+
+    await logActivity(req.decoded.uid, "MATCH_COINS_CREDITED",
+      `${tournamentId} \u2022 credited ${credited}, adjusted ${adjusted}, unchanged ${unchanged}, failed ${failed} \u2022 +${totalCoins} coins`);
+    return res.status(200).json({ status: "OK", credited, adjusted, unchanged, failed, totalCoins });
+  } catch (error) {
+    console.error("creditMatchCoins error", error.message);
+    return res.status(500).json({ error: "Could not credit match coins" });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// COIN SUPPORT: user ne payment kar diya par coins nahi mile -> wallet page se
+// message bhejta hai (QR + UPI ID + description). Admin Users page ke "Coin Requests"
+// me dekhta hai aur coins add karta hai / UPI se pay karke PAID mark karta hai / reject karta hai.
+// coin_support/{id} admin-SDK-only hai (rules me write:false); user ko apni copy
+// users/{uid}/coinSupport/{id} me dikhti hai (withdrawals jaisa mirror).
+// ---------------------------------------------------------------------------
+function validCoinRequestId(value) {
+  return typeof value === "string" && /^[A-Za-z0-9_-]{6,64}$/.test(value);
+}
+
+app.post("/requestCoinSupport", moneyLimiter, async (req, res) => {
+  const idToken = getBearerToken(req);
+  if (!idToken) return res.status(401).json({ error: "Missing Firebase authorization token" });
+  let decoded;
+  try {
+    decoded = await admin.auth().verifyIdToken(idToken);
+  } catch (_error) {
+    return res.status(401).json({ error: "Invalid Firebase authorization token" });
+  }
+
+  const upiId = String(req.body?.upiId || "").trim();
+  const description = String(req.body?.description || "").trim();
+  const qrUrl = String(req.body?.qrUrl || "").trim();
+  if (!validUpiId(upiId)) {
+    return res.status(400).json({ error: "Enter a valid UPI ID (e.g. name@bank)" });
+  }
+  if (description.length < 10 || description.length > 500) {
+    return res.status(400).json({ error: "Description 10 se 500 characters ki honi chahiye" });
+  }
+  if (!/^https:\/\/\S{6,600}$/.test(qrUrl)) {
+    return res.status(400).json({ error: "QR image upload nahi hui, dobara try karo" });
+  }
+
+  const uid = decoded.uid;
+  try {
+    // Spam guard: ek time par max 3 pending requests.
+    const mine = await db.ref(`users/${uid}/coinSupport`).once("value");
+    let pending = 0;
+    mine.forEach((child) => { if (child.child("status").val() === "PENDING") pending++; });
+    if (pending >= 3) {
+      return res.status(409).json({ error: "Aapki 3 requests already pending hain. Admin reply ka wait karo." });
+    }
+
+    const user = (await db.ref(`users/${uid}`).once("value")).val() || {};
+    const requestId = db.ref("coin_support").push().key;
+    const record = {
+      userId: uid,
+      userName: String(user.name || decoded.name || "Player").slice(0, 120),
+      userEmail: String(user.email || decoded.email || "").slice(0, 200),
+      userPhone: String(user.phone || "").slice(0, 32),
+      upiId,
+      qrUrl,
+      description,
+      status: "PENDING",
+      createdAt: admin.database.ServerValue.TIMESTAMP,
+    };
+    await db.ref().update({
+      [`coin_support/${requestId}`]: record,
+      [`users/${uid}/coinSupport/${requestId}`]: record,
+    });
+    await logActivity(uid, "COIN_REQUEST_CREATED", `${requestId} \u2022 ${upiId}`);
+    return res.status(200).json({ status: "OK", requestId });
+  } catch (error) {
+    console.error("requestCoinSupport error", error.message);
+    return res.status(500).json({ error: "Could not send your message" });
+  }
+});
+
+function canResolveCoinRequests(role) {
+  return isMasterOrResultsCoins(role) || role === "PAYMENT_ADMIN";
+}
+
+// action: CREDIT (wallet me `amount` coins add + PAID), PAID (admin ne UPI se pay kar diya, coins nahi),
+// REJECTED. Status PENDING -> PROCESSING atomic claim se hota hai, isliye double tap / 2 admins se
+// double credit nahi ho sakta.
+app.post("/admin/resolveCoinRequest", requireAdmin(canResolveCoinRequests), async (req, res) => {
+  const requestId = String(req.body?.requestId || "").trim();
+  const action = String(req.body?.action || "").trim().toUpperCase();
+  const note = String(req.body?.note || "").trim().slice(0, 200);
+  const amount = Number(req.body?.amount || 0);
+  if (!validCoinRequestId(requestId)) return res.status(400).json({ error: "requestId is required" });
+  if (!["CREDIT", "PAID", "REJECTED"].includes(action)) {
+    return res.status(400).json({ error: "action must be CREDIT, PAID or REJECTED" });
+  }
+  if (action === "CREDIT" && (!Number.isInteger(amount) || amount <= 0 || amount > 1000000)) {
+    return res.status(400).json({ error: "Coins amount must be a whole number greater than 0" });
+  }
+
+  const reqRef = db.ref(`coin_support/${requestId}`);
+  let claimed = false;
+  let credited = false;
+  try {
+    const snap = await reqRef.once("value");
+    if (!snap.exists()) return res.status(404).json({ error: "Request not found" });
+    const request = snap.val() || {};
+    const uid = String(request.userId || "");
+    if (!uid) return res.status(422).json({ error: "Request has no user" });
+
+    const claim = await reqRef.child("status").transaction((current) => current === "PENDING" ? "PROCESSING" : undefined);
+    if (!claim.committed) return res.status(409).json({ error: "Ye request already resolve ho chuki hai" });
+    claimed = true;
+
+    const adminLabel = req.decoded.email || req.decoded.uid;
+    const updates = {};
+    let balanceAfter = null;
+
+    if (action === "CREDIT") {
+      let before = 0;
+      const walletRes = await db.ref(`users/${uid}/wallet`).transaction((current) => {
+        const wallet = current && typeof current === "object" ? { ...current } : {};
+        const balance = Number(wallet.balance || 0);
+        before = Number.isFinite(balance) ? balance : 0;
+        wallet.balance = before + amount;
+        return wallet;
+      });
+      if (!walletRes.committed) throw new Error("wallet update failed");
+      credited = true;
+      balanceAfter = before + amount;
+
+      const logId = db.ref("manual_coin_log").push().key;
+      updates[`manual_coin_log/${logId}`] = {
+        uid,
+        userName: String(request.userName || ""),
+        userEmail: String(request.userEmail || ""),
+        action: "ADD",
+        amount,
+        delta: amount,
+        balanceBefore: before,
+        balanceAfter,
+        reason: `Coin support ${requestId}${note ? " \u2022 " + note : ""}`,
+        adminUid: req.decoded.uid,
+        adminEmail: adminLabel,
+        at: admin.database.ServerValue.TIMESTAMP,
+      };
+      updates[`users/${uid}/wallet/transactions/coinsupport_${requestId}`] = {
+        type: "ADMIN_ADJUSTMENT",
+        title: `+${amount} Coins (Support)`,
+        description: "Coin support request resolved",
+        amount,
+        status: "SUCCESS",
+        timestamp: admin.database.ServerValue.TIMESTAMP,
+      };
+    }
+
+    const final = {
+      status: action === "REJECTED" ? "REJECTED" : "PAID",
+      resolution: action,
+      coinsAdded: action === "CREDIT" ? amount : 0,
+      adminNote: note,
+      resolvedAt: admin.database.ServerValue.TIMESTAMP,
+      resolvedBy: adminLabel,
+    };
+    for (const [key, value] of Object.entries(final)) {
+      updates[`coin_support/${requestId}/${key}`] = value;
+      updates[`users/${uid}/coinSupport/${requestId}/${key}`] = value;
+    }
+    // Coins diye ja chuke hain to status update ko retry karte hain - revert kabhi nahi (double credit na ho).
+    let written = false;
+    for (let attempt = 0; attempt < 3 && !written; attempt++) {
+      try { await db.ref().update(updates); written = true; } catch (_e) { await sleep(400); }
+    }
+    if (!written) {
+      claimed = false; // do not roll back: money may already have moved
+      return res.status(500).json({ error: "Coins credit ho gaye par status save nahi hua. Request ko dobara open karke check karo." });
+    }
+    claimed = false;
+
+    const title = action === "REJECTED" ? "Coin request rejected"
+      : action === "CREDIT" ? "Coins added" : "Payment sent";
+    const body = action === "CREDIT"
+      ? `${amount} coins aapke wallet me add kar diye gaye hain.${note ? " " + note : ""}`
+      : action === "PAID"
+        ? `Aapki coin request resolve ho gayi, payment aapki UPI ID par bhej diya gaya.${note ? " " + note : ""}`
+        : `Aapki coin request reject hui.${note ? " Reason: " + note : ""}`;
+    await createUserNotifications([uid], title, body, "COINS_APPROVED", { requestId });
+    await logActivity(req.decoded.uid, "COIN_REQUEST_" + action,
+      `${requestId} \u2022 user ${uid}${action === "CREDIT" ? " \u2022 +" + amount + " coins" : ""}${note ? " \u2022 " + note : ""}`);
+    return res.status(200).json({ status: "OK", resolution: action, balanceAfter });
+  } catch (error) {
+    if (claimed && !credited) {
+      await reqRef.child("status").set("PENDING").catch(() => {});
+    }
+    console.error("resolveCoinRequest error", error.message);
+    return res.status(500).json({ error: "Could not resolve this request" });
+  }
+});
+
 // Admin removes a resolved (PAID/REJECTED) withdrawal from the history list.
 // PENDING requests can never be deleted here — they still hold locked coins,
 // so they must go through approveWithdrawal (PAID/REJECTED) first, which is
@@ -1529,6 +1919,40 @@ async function reconcileJoinedSlots() {
 }
 setInterval(reconcileJoinedSlots, 60_000);
 reconcileJoinedSlots();
+
+// One-off + periodic cleanup: room credentials and rank drafts used to sit in tournaments/{id}, which every
+// signed-in player can read. Move anything unreleased into admin-only nodes and blank the public copy.
+let scrubRunning = false;
+async function scrubPublicSecrets() {
+  if (scrubRunning) return;
+  scrubRunning = true;
+  try {
+    const snap = await db.ref("tournaments").once("value");
+    const updates = {};
+    snap.forEach((t) => {
+      const v = t.val() || {};
+      if (v.roomReleased !== true && (v.roomId || v.roomPassword)) {
+        updates[`matches/${t.key}/roomRelease/roomId`] = String(v.roomId || "");
+        updates[`matches/${t.key}/roomRelease/roomPassword`] = String(v.roomPassword || "");
+        updates[`tournaments/${t.key}/roomId`] = "";
+        updates[`tournaments/${t.key}/roomPassword`] = "";
+      }
+      if (v.rankDraft) {
+        updates[`rank_drafts/${t.key}/rows`] = v.rankDraft;
+        updates[`rank_drafts/${t.key}/savedAt`] = v.rankDraftAt || admin.database.ServerValue.TIMESTAMP;
+        updates[`tournaments/${t.key}/rankDraft`] = null;
+        updates[`tournaments/${t.key}/rankDraftAt`] = null;
+      }
+    });
+    if (Object.keys(updates).length) await db.ref().update(updates);
+  } catch (error) {
+    console.error("scrub error", error.message);
+  } finally {
+    scrubRunning = false;
+  }
+}
+setInterval(scrubPublicSecrets, 5 * 60_000);
+scrubPublicSecrets();
 
 // Render's free plan puts the service to sleep after ~15 minutes with no
 // inbound traffic; the next real request then pays a 30-60s cold-start
