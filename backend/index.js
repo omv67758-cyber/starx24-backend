@@ -2287,6 +2287,21 @@ if ((process.env.KEEP_ALIVE || "true").trim().toLowerCase() !== "false") {
 const AI_API_KEY = process.env.OPENROUTER_API_KEY?.trim();
 // "openrouter/free" auto-picks an available free model. Set SUPPORT_AI_MODEL to pin a specific one (e.g. some-model:free).
 const SUPPORT_AI_MODEL = (process.env.SUPPORT_AI_MODEL || "openrouter/free").trim();
+// SUPPORT_AI_MODEL may be a comma-separated list; models are tried in order if one returns junk/fails.
+const SUPPORT_AI_MODELS = SUPPORT_AI_MODEL.split(",").map((m) => m.trim()).filter(Boolean);
+const SUPPORT_AI_MAX_ATTEMPTS = 3;
+
+/** "openrouter/free" can route to a safety-classifier model (Llama Guard / Nemotron Safety etc.)
+ *  which answers with "User Safety: safe / Response Safety: safe" instead of a real reply.
+ *  Detect that kind of output so it is never shown to the user. */
+function looksLikeGuardOutput(text) {
+  const t = String(text || "").trim();
+  if (!t) return true;
+  if (/^\s*(user|response|prompt)\s*safety\s*:/im.test(t)) return true;
+  if (/safety\s*categor(y|ies)\s*:/i.test(t)) return true;
+  if (/^\s*(safe|unsafe)\s*(\n\s*S\d+(\s*,\s*S\d+)*)?\s*$/i.test(t)) return true;
+  return false;
+}
 const SUPPORT_REDIRECT_COIN_TAG = "[[REDIRECT_COIN_SUPPORT]]";
 const SUPPORT_REDIRECT_GENERAL_TAG = "[[REDIRECT_SUPPORT]]";
 
@@ -2385,30 +2400,51 @@ app.post("/support/chat", supportChatLimiter, async (req, res) => {
 
   try {
     const faqText = await loadFaqText();
-    const apiResponse = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        authorization: `Bearer ${AI_API_KEY}`,
-        "X-Title": "STARX24 Support",
-      },
-      body: JSON.stringify({
-        model: SUPPORT_AI_MODEL,
-        max_tokens: 400,
-        temperature: 0.3,
-        messages: [
-          { role: "system", content: buildSupportSystemPrompt(faqText) },
-          ...messages,
-        ],
-      }),
-      signal: AbortSignal.timeout(30_000),
-    });
-    if (!apiResponse.ok) {
-      console.error("support chat upstream", apiResponse.status, (await apiResponse.text()).slice(0, 300));
+    const systemPrompt = buildSupportSystemPrompt(faqText);
+    let reply = "";
+    let upstreamFailed = false;
+    for (let attempt = 0; attempt < SUPPORT_AI_MAX_ATTEMPTS; attempt++) {
+      const model = SUPPORT_AI_MODELS[attempt % SUPPORT_AI_MODELS.length];
+      let apiResponse;
+      try {
+        apiResponse = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            authorization: `Bearer ${AI_API_KEY}`,
+            "X-Title": "STARX24 Support",
+          },
+          body: JSON.stringify({
+            model,
+            max_tokens: 400,
+            temperature: 0.3,
+            messages: [{ role: "system", content: systemPrompt }, ...messages],
+          }),
+          signal: AbortSignal.timeout(30_000),
+        });
+      } catch (fetchError) {
+        console.error("support chat fetch error", model, fetchError.message);
+        upstreamFailed = true;
+        continue;
+      }
+      if (!apiResponse.ok) {
+        console.error("support chat upstream", model, apiResponse.status, (await apiResponse.text()).slice(0, 300));
+        upstreamFailed = true;
+        continue;
+      }
+      upstreamFailed = false;
+      const data = await apiResponse.json();
+      const candidate = String(data.choices?.[0]?.message?.content || "").trim();
+      if (looksLikeGuardOutput(candidate)) {
+        console.warn("support chat: discarded non-answer from", data.model || model, JSON.stringify(candidate.slice(0, 120)));
+        continue;
+      }
+      reply = candidate;
+      break;
+    }
+    if (!reply && upstreamFailed) {
       return res.status(502).json({ error: "AI assistant is busy. Please try again or open Help Center -> Support." });
     }
-    const data = await apiResponse.json();
-    let reply = String(data.choices?.[0]?.message?.content || "").trim();
     const coinRedirect = reply.includes(SUPPORT_REDIRECT_COIN_TAG);
     const generalRedirect = reply.includes(SUPPORT_REDIRECT_GENERAL_TAG);
     reply = reply.split(SUPPORT_REDIRECT_COIN_TAG).join("");
