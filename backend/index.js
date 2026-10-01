@@ -1372,7 +1372,14 @@ app.post("/admin/adjustCoins", requireAdmin(isMasterOrResultsCoins), async (req,
     let before = 0;
     let after = 0;
     let insufficient = false;
-    const result = await db.ref(`users/${uid}/wallet`).transaction((current) => {
+    // Real read first, so the transaction callback never decides on a null local cache.
+    const walletRef = db.ref(`users/${uid}/wallet`);
+    const walletExists = (await walletRef.once("value").catch(() => null))?.exists() === true;
+    const result = await walletRef.transaction((current) => {
+      // FIX: the first call gets a local guess (null). Aborting on it made REMOVE report
+      // "only has 0 coins" even when the wallet had coins. Return null so the SDK refetches
+      // the real wallet and calls this function again (same fix as joinMatch / withdraw).
+      if (current === null && walletExists) return current;
       const wallet = current && typeof current === "object" ? { ...current } : {};
       const balance = Number(wallet.balance || 0);
       before = Number.isFinite(balance) ? balance : 0;
@@ -1387,7 +1394,7 @@ app.post("/admin/adjustCoins", requireAdmin(isMasterOrResultsCoins), async (req,
     });
     if (!result.committed) {
       return res.status(insufficient ? 409 : 500).json({
-        error: insufficient ? `User only has ${before} coins, cannot remove ${amount}` : "Could not update coins",
+        error: insufficient ? `Insufficient coins: wallet has ${before}, tried to remove ${amount} [adjust-v2]` : "Could not update coins",
       });
     }
 
@@ -1429,7 +1436,7 @@ app.post("/admin/adjustCoins", requireAdmin(isMasterOrResultsCoins), async (req,
       "COINS_ADJUSTED", { logId });
     await logActivity(req.decoded.uid, "MANUAL_COINS_" + action,
       `user ${uid} • ${signed > 0 ? "+" : ""}${signed} coins • ${before} -> ${after} • ${reason}`);
-    return res.status(200).json({ status: "OK", balanceBefore: before, balanceAfter: after, logId });
+    return res.status(200).json({ status: "OK", balanceBefore: before, balanceAfter: after, logId, v: "adjust-v2" });
   } catch (error) {
     console.error("adjustCoins error", error.message);
     return res.status(500).json({ error: "Could not adjust coins" });
