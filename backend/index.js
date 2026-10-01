@@ -2279,13 +2279,14 @@ if ((process.env.KEEP_ALIVE || "true").trim().toLowerCase() !== "false") {
 
 // ---------------------------------------------------------------------------
 // AI Support Chat  (POST /support/chat)
-// The Gemini key lives ONLY here (env GEMINI_API_KEY), never in the APK.
+// The OpenRouter key lives ONLY here (env OPENROUTER_API_KEY), never in the APK.
 // The bot answers from the FAQ + app knowledge below. It has NO access to
 // wallets/payments and must never promise refunds, coins or prizes - for
 // anything account-specific it hands off to a human via a support ticket.
 // ---------------------------------------------------------------------------
-const AI_API_KEY = process.env.GEMINI_API_KEY?.trim();
-const SUPPORT_AI_MODEL = (process.env.SUPPORT_AI_MODEL || "gemini-2.5-flash-lite").trim();
+const AI_API_KEY = process.env.OPENROUTER_API_KEY?.trim();
+// "openrouter/free" auto-picks an available free model. Set SUPPORT_AI_MODEL to pin a specific one (e.g. some-model:free).
+const SUPPORT_AI_MODEL = (process.env.SUPPORT_AI_MODEL || "openrouter/free").trim();
 const SUPPORT_ESCALATE_TAG = "[[TICKET]]";
 
 const SUPPORT_BASE_KNOWLEDGE = `
@@ -2381,31 +2382,30 @@ app.post("/support/chat", supportChatLimiter, async (req, res) => {
 
   try {
     const faqText = await loadFaqText();
-    const apiResponse = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(SUPPORT_AI_MODEL)}:generateContent`,
-      {
-        method: "POST",
-        headers: { "content-type": "application/json", "x-goog-api-key": AI_API_KEY },
-        body: JSON.stringify({
-          systemInstruction: { parts: [{ text: buildSupportSystemPrompt(faqText) }] },
-          contents: messages.map((m) => ({
-            role: m.role === "assistant" ? "model" : "user",
-            parts: [{ text: m.content }],
-          })),
-          generationConfig: { maxOutputTokens: 400, temperature: 0.3 },
-        }),
-        signal: AbortSignal.timeout(30_000),
-      }
-    );
+    const apiResponse = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${AI_API_KEY}`,
+        "X-Title": "STARX24 Support",
+      },
+      body: JSON.stringify({
+        model: SUPPORT_AI_MODEL,
+        max_tokens: 400,
+        temperature: 0.3,
+        messages: [
+          { role: "system", content: buildSupportSystemPrompt(faqText) },
+          ...messages,
+        ],
+      }),
+      signal: AbortSignal.timeout(30_000),
+    });
     if (!apiResponse.ok) {
       console.error("support chat upstream", apiResponse.status, (await apiResponse.text()).slice(0, 300));
       return res.status(502).json({ error: "AI assistant is busy. Please try again or create a support ticket." });
     }
     const data = await apiResponse.json();
-    let reply = (data.candidates?.[0]?.content?.parts || [])
-      .map((part) => part.text || "")
-      .join("\n")
-      .trim();
+    let reply = String(data.choices?.[0]?.message?.content || "").trim();
     const escalate = reply.includes(SUPPORT_ESCALATE_TAG);
     reply = reply.split(SUPPORT_ESCALATE_TAG).join("").trim();
     if (!reply) reply = "Sorry, I could not answer that. Please create a support ticket and our team will help.";
