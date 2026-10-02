@@ -176,8 +176,11 @@ function requireAdmin(allow) {
 
 /** Every admin money/result action gets one line here — who, what, on whom. */
 async function logActivity(actorUid, action, details) {
+  let adminKey = null;
+  try { adminKey = (await db.ref(`admin_sessions/${actorUid}/key`).once("value")).val() || null; } catch (_e) { /* optional */ }
   await db.ref("activity_logs").push({
     actorUid,
+    ...(adminKey ? { adminKey } : {}),
     action,
     details: details || "",
     at: admin.database.ServerValue.TIMESTAMP,
@@ -1409,7 +1412,7 @@ app.post("/admin/approveWithdrawal", requireAdmin(isMasterOrPayment), async (req
 // Every change is written to manual_coin_log (admin SDK only) so there is always a history.
 function isMasterOrResultsCoins(role, perms) {
   return role === "MASTER_ADMIN" || role === "SUPER_ADMIN" || role === "RESULTS_COINS_ADMIN"
-    || hasPerm(perms, "coin_requests");
+    || hasPerm(perms, "coin_requests") || hasPerm(perms, "coin_support");
 }
 
 app.post("/admin/adjustCoins", requireAdmin(isMasterOrResultsCoins), async (req, res) => {
@@ -1996,16 +1999,17 @@ app.post("/admin/resolveCoinRequest", requireAdmin(canResolveCoinRequests), asyn
   const note = String(req.body?.note || "").trim().slice(0, 200);
   const amount = Number(req.body?.amount || 0);
   if (!validCoinRequestId(requestId)) return res.status(400).json({ error: "requestId is required" });
-  if (!["CREDIT", "PAID", "REJECTED"].includes(action)) {
-    return res.status(400).json({ error: "action must be CREDIT, PAID or REJECTED" });
+  if (!["APPROVED", "CREDIT", "DEBIT", "PAID", "REJECTED"].includes(action)) {
+    return res.status(400).json({ error: "action must be APPROVED, CREDIT, DEBIT, PAID or REJECTED" });
   }
-  if (action === "CREDIT" && (!Number.isInteger(amount) || amount <= 0 || amount > 1000000)) {
+  if ((action === "CREDIT" || action === "DEBIT") && (!Number.isInteger(amount) || amount <= 0 || amount > 1000000)) {
     return res.status(400).json({ error: "Coins amount must be a whole number greater than 0" });
   }
 
   const reqRef = db.ref(`coin_support/${requestId}`);
   let claimed = false;
   let credited = false;
+  let restoreStatus = "PENDING";
   try {
     const snap = await reqRef.once("value");
     if (!snap.exists()) return res.status(404).json({ error: "Request not found" });
@@ -2013,13 +2017,41 @@ app.post("/admin/resolveCoinRequest", requireAdmin(canResolveCoinRequests), asyn
     const uid = String(request.userId || "");
     if (!uid) return res.status(422).json({ error: "Request has no user" });
 
-    const claim = await reqRef.child("status").transaction((current) => current === "PENDING" ? "PROCESSING" : undefined);
+    const prevStatus = String(request.status || "PENDING");
+    // APPROVE only works on a PENDING request; coin/paid/reject work on PENDING or APPROVED.
+    const allowedFrom = action === "APPROVED" ? ["PENDING"] : ["PENDING", "APPROVED"];
+    if (!allowedFrom.includes(prevStatus)) {
+      return res.status(409).json({ error: "Ye request already resolve ho chuki hai" });
+    }
+    const claim = await reqRef.child("status").transaction((current) => current === prevStatus ? "PROCESSING" : undefined);
     if (!claim.committed) return res.status(409).json({ error: "Ye request already resolve ho chuki hai" });
     claimed = true;
+    restoreStatus = prevStatus;
 
     const adminLabel = req.decoded.email || req.decoded.uid;
     const updates = {};
     let balanceAfter = null;
+
+    if (action === "APPROVED") {
+      // Step 1 only: user approve hota hai, koi coin move nahi hota. Phir admin ADD / REMOVE kar sakta hai.
+      const approvedFields = {
+        status: "APPROVED",
+        approvedAt: admin.database.ServerValue.TIMESTAMP,
+        approvedBy: adminLabel,
+        adminNote: note,
+      };
+      for (const [key, value] of Object.entries(approvedFields)) {
+        updates[`coin_support/${requestId}/${key}`] = value;
+        updates[`users/${uid}/coinSupport/${requestId}/${key}`] = value;
+      }
+      await db.ref().update(updates);
+      claimed = false;
+      await createUserNotifications([uid], "Coin request approved",
+        `Aapki coin request approve ho gayi hai. Admin jaldi coins update karega.${note ? " " + note : ""}`,
+        "COINS_APPROVED", { requestId });
+      await logActivity(req.decoded.uid, "COIN_REQUEST_APPROVED", `${requestId} \u2022 user ${uid}${note ? " \u2022 " + note : ""}`);
+      return res.status(200).json({ status: "OK", resolution: "APPROVED" });
+    }
 
     if (action === "CREDIT") {
       let before = 0;
@@ -2059,10 +2091,57 @@ app.post("/admin/resolveCoinRequest", requireAdmin(canResolveCoinRequests), asyn
       };
     }
 
+    if (action === "DEBIT") {
+      let before = 0;
+      let insufficient = false;
+      const walletRes = await db.ref(`users/${uid}/wallet`).transaction((current) => {
+        const wallet = current && typeof current === "object" ? { ...current } : {};
+        const balance = Number(wallet.balance || 0);
+        before = Number.isFinite(balance) ? balance : 0;
+        if (before < amount) { insufficient = true; return; } // never push a wallet below zero
+        insufficient = false;
+        wallet.balance = before - amount;
+        return wallet;
+      });
+      if (!walletRes.committed) {
+        await reqRef.child("status").set(restoreStatus).catch(() => {});
+        claimed = false;
+        return res.status(insufficient ? 409 : 500).json({
+          error: insufficient ? `Insufficient coins: wallet has ${before}, tried to remove ${amount}` : "Could not remove coins",
+        });
+      }
+      credited = true;
+      balanceAfter = before - amount;
+
+      const logId = db.ref("manual_coin_log").push().key;
+      updates[`manual_coin_log/${logId}`] = {
+        uid,
+        userName: String(request.userName || ""),
+        userEmail: String(request.userEmail || ""),
+        action: "REMOVE",
+        amount,
+        delta: -amount,
+        balanceBefore: before,
+        balanceAfter,
+        reason: `Coin support ${requestId}${note ? " \u2022 " + note : ""}`,
+        adminUid: req.decoded.uid,
+        adminEmail: adminLabel,
+        at: admin.database.ServerValue.TIMESTAMP,
+      };
+      updates[`users/${uid}/wallet/transactions/coinsupport_${requestId}`] = {
+        type: "ADMIN_ADJUSTMENT",
+        title: `-${amount} Coins (Support)`,
+        description: "Coin support request resolved",
+        amount,
+        status: "SUCCESS",
+        timestamp: admin.database.ServerValue.TIMESTAMP,
+      };
+    }
+
     const final = {
       status: action === "REJECTED" ? "REJECTED" : "PAID",
       resolution: action,
-      coinsAdded: action === "CREDIT" ? amount : 0,
+      coinsAdded: action === "CREDIT" ? amount : (action === "DEBIT" ? -amount : 0),
       adminNote: note,
       resolvedAt: admin.database.ServerValue.TIMESTAMP,
       resolvedBy: adminLabel,
@@ -2083,19 +2162,21 @@ app.post("/admin/resolveCoinRequest", requireAdmin(canResolveCoinRequests), asyn
     claimed = false;
 
     const title = action === "REJECTED" ? "Coin request rejected"
-      : action === "CREDIT" ? "Coins added" : "Payment sent";
+      : action === "CREDIT" ? "Coins added" : action === "DEBIT" ? "Coins removed" : "Payment sent";
     const body = action === "CREDIT"
       ? `${amount} coins aapke wallet me add kar diye gaye hain.${note ? " " + note : ""}`
+      : action === "DEBIT"
+        ? `${amount} coins aapke wallet se remove kar diye gaye hain.${note ? " " + note : ""}`
       : action === "PAID"
         ? `Aapki coin request resolve ho gayi, payment aapki UPI ID par bhej diya gaya.${note ? " " + note : ""}`
         : `Aapki coin request reject hui.${note ? " Reason: " + note : ""}`;
     await createUserNotifications([uid], title, body, "COINS_APPROVED", { requestId });
     await logActivity(req.decoded.uid, "COIN_REQUEST_" + action,
-      `${requestId} \u2022 user ${uid}${action === "CREDIT" ? " \u2022 +" + amount + " coins" : ""}${note ? " \u2022 " + note : ""}`);
+      `${requestId} \u2022 user ${uid}${action === "CREDIT" ? " \u2022 +" + amount + " coins" : action === "DEBIT" ? " \u2022 -" + amount + " coins" : ""}${note ? " \u2022 " + note : ""}`);
     return res.status(200).json({ status: "OK", resolution: action, balanceAfter });
   } catch (error) {
     if (claimed && !credited) {
-      await reqRef.child("status").set("PENDING").catch(() => {});
+      await reqRef.child("status").set(restoreStatus).catch(() => {});
     }
     console.error("resolveCoinRequest error", error.message);
     return res.status(500).json({ error: "Could not resolve this request" });
