@@ -404,6 +404,8 @@ async function creditWalletOnce(order) {
 
     const currentBalance = Number(wallet.balance || 0);
     wallet.balance = currentBalance + Number(order.amount);
+    // Deposits are playable only; they are never withdrawable.
+    wallet.withdrawableBalance = Math.max(0, Number(wallet.withdrawableBalance || 0));
     creditedOrders[order.orderId] = {
       amount: Number(order.amount),
       creditedAt: admin.database.ServerValue.TIMESTAMP,
@@ -878,6 +880,7 @@ app.post("/joinMatch", moneyLimiter, async (req, res) => {
   const participantRef = db.ref(`tournaments/${tournamentId}/participants/${decoded.uid}`);
   const walletRef = db.ref(`users/${decoded.uid}/wallet`);
   let debitedAmount = 0;
+  let debitedWithdrawable = 0;
   let reserved = false;
   const claimedSlotRefs = [];
   try {
@@ -1019,9 +1022,15 @@ app.post("/joinMatch", moneyLimiter, async (req, res) => {
         if (current === null) return current;
         const wallet = current && typeof current === "object" ? { ...current } : {};
         const balance = Number(wallet.balance || 0);
-        sawDuringTransaction = { rawCurrent: current, parsedBalance: balance };
+        const withdrawable = Math.max(0, Math.min(balance, Number(wallet.withdrawableBalance || 0)));
+        sawDuringTransaction = { rawCurrent: current, parsedBalance: balance, parsedWithdrawable: withdrawable };
         if (!Number.isFinite(balance) || balance < entryFee) return;
+        // Deposited coins are consumed first, preserving winnings for payout.
+        const fromWinnings = Math.max(0, entryFee - Math.max(0, balance - withdrawable));
+        if (fromWinnings > withdrawable) return;
         wallet.balance = balance - entryFee;
+        wallet.withdrawableBalance = withdrawable - fromWinnings;
+        debitedWithdrawable = fromWinnings;
         return wallet;
       });
       if (!debit.committed) {
@@ -1065,7 +1074,7 @@ app.post("/joinMatch", moneyLimiter, async (req, res) => {
       userId: decoded.uid, teamName: "", teamSize: Number(tournament.teamSize || 1),
       slotNumber, slotNumbers: claimedSlotNumbers,
       gameUid: primaryPlayer.gameUid, gameName: primaryPlayer.gameName,
-      entryFeeCoins: entryFee, entryStatus: entryFee > 0 ? "PAID" : "FREE",
+      entryFeeCoins: entryFee, withdrawableDebited: debitedWithdrawable, entryStatus: entryFee > 0 ? "PAID" : "FREE",
       status: "REGISTERED", createdAt: admin.database.ServerValue.TIMESTAMP,
     };
     if (slotPlayers) participant.players = slotPlayers;
@@ -1154,6 +1163,7 @@ app.post("/joinMatch", moneyLimiter, async (req, res) => {
       await walletRef.transaction((current) => {
         const wallet = current && typeof current === "object" ? { ...current } : {};
         wallet.balance = Number(wallet.balance || 0) + debitedAmount;
+        wallet.withdrawableBalance = Number(wallet.withdrawableBalance || 0) + debitedWithdrawable;
         return wallet;
       }).catch(() => {});
     }
@@ -1267,6 +1277,22 @@ app.post("/requestWithdrawal", moneyLimiter, async (req, res) => {
     }
 
     const walletRef = db.ref(`users/${uid}/wallet`);
+    // Older wallets only had the combined balance. Build the first winnings-only
+    // balance from the immutable transaction ledger, deliberately ignoring DEPOSIT,
+    // ADMIN_ADJUSTMENT and REFUND entries so deposited coins stay non-withdrawable.
+    let legacyWithdrawable = null;
+    const walletSnapshot = await walletRef.once("value").catch(() => null);
+    if (walletSnapshot && walletSnapshot.exists() && !walletSnapshot.child("withdrawableBalance").exists()) {
+      const txSnapshot = await walletRef.child("transactions").once("value").catch(() => null);
+      let earned = 0;
+      if (txSnapshot) txSnapshot.forEach((child) => {
+        if (String(child.child("type").val() || "") !== "WINNING_REWARD") return;
+        const amount = Math.max(0, Number(child.child("amount").val()) || 0);
+        const title = String(child.child("title").val() || "");
+        earned += title.trim().startsWith("-") ? -amount : amount;
+      });
+      legacyWithdrawable = Math.max(0, Math.min(Number(walletSnapshot.child("balance").val()) || 0, earned));
+    }
     // Same warm-sync guard as /joinMatch — see the comment there. Forces a
     // real read before the transaction so its callback never fires on a
     // stale/null local cache right after a Render cold start.
@@ -1276,13 +1302,18 @@ app.post("/requestWithdrawal", moneyLimiter, async (req, res) => {
       if (current === null) return current;
       const wallet = current && typeof current === "object" ? { ...current } : {};
       const balance = Number(wallet.balance || 0);
-      if (!Number.isFinite(balance) || balance < amount) return;
+      if (!Object.prototype.hasOwnProperty.call(wallet, "withdrawableBalance")) {
+        wallet.withdrawableBalance = legacyWithdrawable == null ? 0 : legacyWithdrawable;
+      }
+      const withdrawable = Math.max(0, Math.min(balance, Number(wallet.withdrawableBalance || 0)));
+      if (!Number.isFinite(withdrawable) || withdrawable < amount) return;
       wallet.balance = balance - amount;
+      wallet.withdrawableBalance = withdrawable - amount;
       wallet.locked = Number(wallet.locked || 0) + amount;
       return wallet;
     });
     if (!debit.committed) {
-      return res.status(409).json({ error: `You need ${amount} coins available to request this withdrawal` });
+      return res.status(409).json({ error: `You need ${amount} winnings coins available to request this withdrawal` });
     }
     locked = true;
 
@@ -1310,6 +1341,7 @@ app.post("/requestWithdrawal", moneyLimiter, async (req, res) => {
       await db.ref(`users/${uid}/wallet`).transaction((current) => {
         const wallet = current && typeof current === "object" ? { ...current } : {};
         wallet.balance = Number(wallet.balance || 0) + amount;
+        wallet.withdrawableBalance = Number(wallet.withdrawableBalance || 0) + amount;
         wallet.locked = Math.max(0, Number(wallet.locked || 0) - amount);
         return wallet;
       }).catch(() => {});
@@ -1362,7 +1394,10 @@ app.post("/admin/approveWithdrawal", requireAdmin(isMasterOrPayment), async (req
     await db.ref(`users/${userId}/wallet`).transaction((current) => {
       const wallet = current && typeof current === "object" ? { ...current } : {};
       wallet.locked = Math.max(0, Number(wallet.locked || 0) - Number(amount));
-      if (action === "REJECTED") wallet.balance = Number(wallet.balance || 0) + Number(amount);
+      if (action === "REJECTED") {
+        wallet.balance = Number(wallet.balance || 0) + Number(amount);
+        wallet.withdrawableBalance = Number(wallet.withdrawableBalance || 0) + Number(amount);
+      }
       return wallet;
     });
 
@@ -1551,6 +1586,7 @@ app.post("/admin/creditMatchCoins", requireAdmin(() => true), async (req, res) =
         const after = Math.max(0, before + delta);
         applied = after - before;
         wallet.balance = after;
+        wallet.withdrawableBalance = Math.max(0, Number(wallet.withdrawableBalance || 0) + (after - before));
         return wallet;
       });
       if (!walletRes.committed) {
@@ -1797,8 +1833,28 @@ app.post("/admin/settleTournament", requireAdmin(isMasterOrResultsCoins), async 
       const payoutOption = String(req.body?.payoutOption || "").trim().toUpperCase().replace(/[ /-]/g, "_");
       const uid = String(req.body?.winnerUid || "");
       const joinedUid = String(req.body?.joinedUid || "");
-      if (pool <= 0) return res.status(422).json({ error: "Set a positive coin prize pool or entry fee for this 1VS1 tournament" });
-      if (payoutOption === "100_0") {
+      const battleCoins = req.body?.battleCoins && typeof req.body.battleCoins === "object" ? req.body.battleCoins : null;
+      if (battleCoins) {
+        // MANUAL 1VS1: admin types the exact coins for each of the two players (no 100/0 or 80/20 rule).
+        const amounts = {};
+        for (const playerUid of participantIds) {
+          const raw = battleCoins[playerUid];
+          if (raw === undefined || raw === null || raw === "") return res.status(422).json({ error: "Enter coins for both players" });
+          amounts[playerUid] = safeCoinTarget(raw);
+        }
+        const top = Math.max(...participantIds.map((playerUid) => amounts[playerUid]));
+        const ordered = [...participantIds].sort((a, b) => amounts[b] - amounts[a]);
+        for (const playerUid of participantIds) {
+          const win = top > 0 && amounts[playerUid] === top;
+          rewards[playerUid] = amounts[playerUid];
+          noticeTypes[playerUid] = win ? "WIN" : "LOSS";
+          rows[playerUid] = { username: String(participants[playerUid].gameName || participants[playerUid].name || "Player"),
+            side: participantIds.indexOf(playerUid) === 0 ? "LEFT" : "RIGHT", placement: ordered.indexOf(playerUid) + 1,
+            kills: 0, coins: amounts[playerUid], result: win ? "WIN" : "LOSS", payout: "MANUAL" };
+        }
+      } else if (pool <= 0) {
+        return res.status(422).json({ error: "Set a positive coin prize pool or entry fee for this 1VS1 tournament" });
+      } else if (payoutOption === "100_0") {
         if (!participantIds.includes(uid)) return res.status(422).json({ error: "Choose one of the two players as winner" });
         const loser = participantIds.find((playerUid) => playerUid !== uid);
         const winnerSide = participantIds.indexOf(uid) === 0 ? "LEFT" : "RIGHT";
@@ -1860,6 +1916,7 @@ app.post("/admin/settleTournament", requireAdmin(isMasterOrResultsCoins), async 
         const before = Math.max(0, Number(wallet.balance) || 0);
         if (before + delta < 0) return;
         wallet.balance = before + delta;
+        wallet.withdrawableBalance = Math.max(0, Number(wallet.withdrawableBalance || 0) + delta);
         applied = true;
         return wallet;
       });
@@ -2346,6 +2403,7 @@ app.post("/leaveMatch", moneyLimiter, async (req, res) => {
       await db.ref(`users/${uid}/wallet`).transaction((current) => {
         const wallet = current && typeof current === "object" ? { ...current } : {};
         wallet.balance = Number(wallet.balance || 0) + refund;
+        wallet.withdrawableBalance = Number(wallet.withdrawableBalance || 0) + Math.max(0, Number(participant.withdrawableDebited || 0));
         return wallet;
       });
     }
@@ -2482,7 +2540,7 @@ const SUPPORT_BASE_KNOWLEDGE = `
 - Joining a match: open the Matches section, pick a match, follow the registration steps and check eligibility first.
 - Withdrawals: Wallet -> Withdraw, enter details; funds arrive within 6 to 12 hours.
 - Leaving a match before it starts refunds the entry fee.
-- Other problems: guide the user with short steps and redirect them to Contact Support (WhatsApp) when account-specific help is required.
+- Other problems: guide the user with short steps and redirect them to Contact Support (Telegram) when account-specific help is required.
 `.trim();
 
 let faqCache = { at: 0, text: "" };
@@ -2515,6 +2573,7 @@ RULES
 - You cannot see the user's account, wallet, payments, withdrawals, rooms or tickets, and you cannot change anything. Never claim you checked or fixed something.
 - Never promise or approve refunds, coins, prizes or withdrawals. Never share or ask for passwords, OTPs, full UPI/bank details or room IDs.
 - The app name is ONLY "STARX24". Never write "ArenaX" or any other app name.
+- Customer support is ONLY on Telegram. Never mention WhatsApp or give any WhatsApp number/link; if the user asks for a support link or contact, tell them to tap the "Contact Support (Telegram)" button in the app.
 - Never mention or offer a "create support ticket" button or a tickets page in chat.
 - For payment/coins missing after a successful payment, always give these short steps: 1) open Wallet, 2) open Coin Support, 3) add UPI ID + payment screenshot/QR + amount/time + description, then end with the exact token ${SUPPORT_REDIRECT_COIN_TAG}.
 - For any other account-specific issue you cannot resolve, give short next steps and end with the exact token ${SUPPORT_REDIRECT_GENERAL_TAG} so the app can open the relevant support screen.
@@ -2561,7 +2620,7 @@ app.post("/support/chat", supportChatLimiter, async (req, res) => {
     return res.status(401).json({ error: "Invalid Firebase authorization token" });
   }
   if (!AI_API_KEY) {
-    return res.status(503).json({ error: "AI assistant is not available right now. Please use Contact Support (WhatsApp)." });
+    return res.status(503).json({ error: "AI assistant is not available right now. Please use Contact Support (Telegram)." });
   }
   const messages = sanitizeChatMessages(req.body?.messages);
   if (!messages) return res.status(400).json({ error: "Please type a message." });
@@ -2617,8 +2676,9 @@ app.post("/support/chat", supportChatLimiter, async (req, res) => {
     const generalRedirect = reply.includes(SUPPORT_REDIRECT_GENERAL_TAG);
     reply = reply.split(SUPPORT_REDIRECT_COIN_TAG).join("");
     reply = reply.split(SUPPORT_REDIRECT_GENERAL_TAG).join("").trim();
+    reply = reply.replace(/https?:\/\/(wa\.me|api\.whatsapp\.com|chat\.whatsapp\.com)\S*/gi, "").replace(/whats\s*app/gi, "Telegram");
     reply = reply.replace(/\s*\(\s*arenax\s*\)/gi, "").replace(/arena\s*x/gi, "STARX24");
-    if (!reply) reply = "Sorry, I could not answer that. Please use Contact Support (WhatsApp).";
+    if (!reply) reply = "Sorry, I could not answer that. Please use Contact Support (Telegram).";
     return res.status(200).json({ reply, redirect: coinRedirect ? "coin_support" : (generalRedirect ? "support" : "") });
   } catch (error) {
     console.error("support chat error", error.message);
