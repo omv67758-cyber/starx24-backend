@@ -670,7 +670,7 @@ async function processRoomReleases() {
       const uids = await getJoinedUids(job.snapshot);
       await createUserNotifications(uids, "Room details are live",
         "Your match Room ID and password are now available.", "ROOM_RELEASED",
-        { matchId: job.id, roomId, roomPassword });
+        { matchId: job.id });
       const tokens = [];
       for (const uid of uids) {
         const token = (await db.ref(`users/${uid}/fcmToken`).once("value")).val();
@@ -1266,7 +1266,19 @@ app.post("/requestWithdrawal", moneyLimiter, async (req, res) => {
 
   const uid = decoded.uid;
   let locked = false;
+  let lockHeld = false;
+  const lockRef = db.ref(`withdrawal_locks/${uid}`);
   try {
+    // Per-user lock (atomic): stops two parallel requests from both passing the
+    // "no pending withdrawal" check below. Stale locks (>2 min) are taken over.
+    const gotLock = await lockRef.transaction((current) => {
+      if (current !== null && Date.now() - Number(current.at || 0) < 120000) return undefined;
+      return { at: Date.now() };
+    });
+    if (!gotLock.committed) {
+      return res.status(409).json({ error: "Another withdrawal request is being processed. Try again in a moment." });
+    }
+    lockHeld = true;
     // One pending request at a time — otherwise a user could fire several
     // requests before any is resolved and lock more coins than they hold.
     const existing = await db.ref("withdrawals").orderByChild("userId").equalTo(uid).once("value");
@@ -1348,6 +1360,8 @@ app.post("/requestWithdrawal", moneyLimiter, async (req, res) => {
     }
     console.error("requestWithdrawal error", error.message);
     return res.status(500).json({ error: "Could not submit withdrawal request" });
+  } finally {
+    if (lockHeld) await lockRef.remove().catch(() => {});
   }
 });
 
@@ -2376,17 +2390,33 @@ app.post("/leaveMatch", moneyLimiter, async (req, res) => {
       return res.status(409).json({ error: "This match has already started" });
     }
 
-    const slotNumbers = Array.isArray(participant.slotNumbers) && participant.slotNumbers.length
-      ? participant.slotNumbers
-      : (participant.slotNumber ? [participant.slotNumber] : []);
-    const refund = Number(participant.entryFeeCoins || 0);
+    // Atomic claim: only the request that actually removes the participant record may release
+    // slots and refund. A concurrent/duplicate leave sees null here and is rejected, so the
+    // same entry fee can never be refunded twice.
+    const participantRef = db.ref(`tournaments/${tournamentId}/participants/${uid}`);
+    let claimed = null;
+    await participantRef.transaction((current) => {
+      claimed = null;
+      if (current === null) return current; // let the SDK retry with real server data
+      claimed = current;
+      return null;
+    });
+    if (!claimed) {
+      return res.status(409).json({ error: "You have already left this match" });
+    }
+    const claimedParticipant = claimed;
 
+    const slotNumbers = Array.isArray(claimedParticipant.slotNumbers) && claimedParticipant.slotNumbers.length
+      ? claimedParticipant.slotNumbers
+      : (claimedParticipant.slotNumber ? [claimedParticipant.slotNumber] : []);
+    const refund = Number(claimedParticipant.entryFeeCoins || 0);
+
+    try {
     for (const slot of slotNumbers) {
       await db.ref(`tournaments/${tournamentId}/slotIndex/${slot}`)
         .transaction((current) => current === uid ? null : undefined);
     }
     const updates = {
-      [`tournaments/${tournamentId}/participants/${uid}`]: null,
       [`tournaments/${tournamentId}/joinedSlots`]: admin.database.ServerValue.increment(-slotNumbers.length),
       [`matches/${tournamentId}/joinedUsers/${uid}`]: null,
       [`matches/${tournamentId}/participants/${uid}`]: null,
@@ -2403,9 +2433,14 @@ app.post("/leaveMatch", moneyLimiter, async (req, res) => {
       await db.ref(`users/${uid}/wallet`).transaction((current) => {
         const wallet = current && typeof current === "object" ? { ...current } : {};
         wallet.balance = Number(wallet.balance || 0) + refund;
-        wallet.withdrawableBalance = Number(wallet.withdrawableBalance || 0) + Math.max(0, Number(participant.withdrawableDebited || 0));
+        wallet.withdrawableBalance = Number(wallet.withdrawableBalance || 0) + Math.max(0, Number(claimedParticipant.withdrawableDebited || 0));
         return wallet;
       });
+    }
+    } catch (innerError) {
+      // Claim succeeded but release/refund failed: put the participant back so the user can retry.
+      await participantRef.transaction((current) => (current === null ? claimedParticipant : undefined)).catch(() => {});
+      throw innerError;
     }
     await logActivity(uid, "MATCH_LEFT", `${tournamentId} • refunded ${refund} coins`);
     return res.status(200).json({ status: "left", refundedCoins: refund });
@@ -2423,6 +2458,107 @@ setInterval(processResultNotices, 15_000);
 processRoomReleases();
 processBroadcasts();
 processCoinApprovals();
+
+// DAILY MODE — a match with tournaments/{id}/dailyMode === true is re-created for the next day at
+// the same time, forever (until admin switches Daily mode OFF). The copy is created once the
+// match is within 24h of its start, so there is always one upcoming copy ready.
+// The copy key is "{seriesId}_{startAtMillis}" (same rule as FirebaseRepository.ensureDailyNext in
+// the admin app), and it is created inside a transaction, so app + server can never duplicate it.
+const DAILY_MS = 24 * 60 * 60 * 1000;
+const DAILY_TZ = process.env.DAILY_TIMEZONE || "Asia/Kolkata";
+const DAILY_COPY_FIELDS = [
+  "title", "mode", "categoryId", "bannerUrl", "description", "prizeInfo", "totalSlots", "teamSize",
+  "map", "matchType", "rules", "prizeDistribution", "active", "accentColor", "entryFeeCoins",
+  "prizePoolCoins", "perKillCoins", "gameType", "resultSystem",
+];
+let dailyMatchesRunning = false;
+async function processDailyMatches() {
+  if (dailyMatchesRunning) return;
+  dailyMatchesRunning = true;
+  try {
+    const snapshot = await db.ref("tournaments").orderByChild("dailyMode").equalTo(true).once("value");
+    const now = Date.now();
+    const jobs = [];
+    snapshot.forEach((child) => {
+      const t = child.val() || {};
+      const start = Number(t.startAt || 0);
+      const status = String(t.status || "").toUpperCase();
+      if (t.dailyNextId || start <= 0 || now < start - DAILY_MS) return;
+      if (t.active === false || status === "DRAFT") return;
+      jobs.push({ id: child.key, t, start });
+    });
+    for (const { id, t, start } of jobs) {
+      let next = start + DAILY_MS;
+      while (next <= now) next += DAILY_MS;
+      const seriesId = String(t.dailySeriesId || id);
+      const nextId = `${seriesId}_${next}`;
+      const copy = { dailyMode: true, dailySeriesId: seriesId };
+      DAILY_COPY_FIELDS.forEach((key) => { if (t[key] !== undefined) copy[key] = t[key]; });
+      const when = new Date(next);
+      Object.assign(copy, {
+        joinedSlots: 0, status: "UPCOMING", registrationStatus: "OPEN",
+        roomId: "", roomPassword: "", roomReleased: false, roomReleaseAt: 0, delayReason: "",
+        startAt: next,
+        date: when.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric", timeZone: DAILY_TZ }).toUpperCase(),
+        time: when.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: true, timeZone: DAILY_TZ }).toUpperCase(),
+        registrationCloseAt: Number(t.registrationCloseAt || 0) > 0 ? Number(t.registrationCloseAt) + (next - start) : 0,
+        createdAt: admin.database.ServerValue.TIMESTAMP,
+      });
+      await db.ref(`tournaments/${nextId}`).transaction((current) => (current === null ? copy : undefined));
+      await db.ref(`tournaments/${id}/dailyNextId`).set(nextId);
+      // Same /matches mirror the admin app writes, so the messenger app lists the daily copy too.
+      await db.ref(`matches/${nextId}`).transaction((current) => (current === null ? {
+        tournamentTitle: copy.title || "", name: copy.title || "", category: copy.mode || "",
+        imageUrl: copy.bannerUrl || "", scheduledAt: next, roomId: "", roomPassword: "",
+        roomReleased: false, status: "UPCOMING", participants: {},
+      } : undefined));
+      console.log(`dailyMatch: created ${nextId} from ${id}`);
+    }
+  } catch (error) {
+    console.error("processDailyMatches error", error.message);
+  } finally {
+    dailyMatchesRunning = false;
+  }
+}
+setInterval(processDailyMatches, 30_000);
+processDailyMatches();
+
+// PUBLIC PROFILE BACKFILL — runs once. Copies name / bio / photo (nothing else) of every existing
+// user into publicProfiles/{uid}, so old accounts show up in player search even before they open
+// their Profile tab. New / edited profiles are kept in sync by the app itself.
+async function backfillPublicProfiles() {
+  try {
+    const flag = db.ref("appConfig/publicProfilesBackfilled");
+    if ((await flag.once("value")).val() === true) return;
+    const [usersSnap, existingSnap] = await Promise.all([
+      db.ref("users").once("value"),
+      db.ref("publicProfiles").once("value"),
+    ]);
+    const updates = {};
+    usersSnap.forEach((child) => {
+      const u = child.val() || {};
+      const name = String(u.name || "").trim().slice(0, 119);
+      if (!name || existingSnap.hasChild(child.key)) return;
+      updates[child.key] = {
+        name, nameLower: name.toLowerCase(),
+        bio: String(u.bio || "").slice(0, 150),
+        photoUrl: String(u.photoUrl || "").slice(0, 499),
+        updatedAt: Date.now(),
+      };
+    });
+    const keys = Object.keys(updates);
+    for (let i = 0; i < keys.length; i += 400) {
+      const chunk = {};
+      keys.slice(i, i + 400).forEach((k) => { chunk[k] = updates[k]; });
+      await db.ref("publicProfiles").update(chunk);
+    }
+    await flag.set(true);
+    console.log(`publicProfiles backfill: ${keys.length} profiles`);
+  } catch (error) {
+    console.error("backfillPublicProfiles error", error.message);
+  }
+}
+backfillPublicProfiles();
 
 // SLOT RECONCILER — joinedSlots used to drift from the real slotIndex claims
 // (admin hand-edits, partial legacy joins, mirrored writes). Every minute the
