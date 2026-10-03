@@ -78,7 +78,7 @@ const publicBaseUrl = (process.env.PUBLIC_BASE_URL?.trim()
 // admin_keys/admin_sessions RBAC already trust. Keeping this in sync with
 // database.rules.json means the owner's Gmail account works as MASTER_ADMIN
 // here too, without introducing a second (custom-claims) admin system.
-const MASTER_EMAIL = (process.env.MASTER_EMAIL || "fflueclark@gmail.com").trim().toLowerCase();
+const MASTER_EMAIL = (process.env.MASTER_EMAIL || "mitakarmakar117@gmail.com").trim().toLowerCase();
 
 if (!zapupiKey) throw new Error("Missing ZAPUPI_KEY");
 if (!publicBaseUrl) throw new Error("Missing PUBLIC_BASE_URL");
