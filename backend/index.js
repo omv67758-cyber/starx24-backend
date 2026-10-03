@@ -88,6 +88,27 @@ admin.initializeApp({
   databaseURL,
 });
 
+// Blocked accounts: every backend endpoint verifies the Firebase ID token through
+// verifyIdToken, so a blocked email is rejected everywhere (admin and user routes).
+// Extra emails can be added in Railway Variables as BLOCKED_EMAILS=a@x.com,b@y.com
+const BLOCKED_EMAILS = new Set(
+  ["fflueclark@gmail.com"]
+    .concat(String(process.env.BLOCKED_EMAILS || "").split(","))
+    .map((e) => e.trim().toLowerCase())
+    .filter(Boolean)
+);
+{
+  const authInstance = admin.auth();
+  const originalVerify = authInstance.verifyIdToken.bind(authInstance);
+  authInstance.verifyIdToken = async (...args) => {
+    const decoded = await originalVerify(...args);
+    if (decoded && decoded.email && BLOCKED_EMAILS.has(String(decoded.email).trim().toLowerCase())) {
+      throw new Error("This account is blocked");
+    }
+    return decoded;
+  };
+}
+
 const db = admin.database();
 const app = express();
 const port = Number(process.env.PORT || 3000);
