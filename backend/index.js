@@ -88,27 +88,6 @@ admin.initializeApp({
   databaseURL,
 });
 
-// Blocked accounts: every backend endpoint verifies the Firebase ID token through
-// verifyIdToken, so a blocked email is rejected everywhere (admin and user routes).
-// Extra emails can be added in Railway Variables as BLOCKED_EMAILS=a@x.com,b@y.com
-const BLOCKED_EMAILS = new Set(
-  ["fflueclark@gmail.com"]
-    .concat(String(process.env.BLOCKED_EMAILS || "").split(","))
-    .map((e) => e.trim().toLowerCase())
-    .filter(Boolean)
-);
-{
-  const authInstance = admin.auth();
-  const originalVerify = authInstance.verifyIdToken.bind(authInstance);
-  authInstance.verifyIdToken = async (...args) => {
-    const decoded = await originalVerify(...args);
-    if (decoded && decoded.email && BLOCKED_EMAILS.has(String(decoded.email).trim().toLowerCase())) {
-      throw new Error("This account is blocked");
-    }
-    return decoded;
-  };
-}
-
 const db = admin.database();
 const app = express();
 const port = Number(process.env.PORT || 3000);
@@ -1356,8 +1335,11 @@ app.post("/requestWithdrawal", moneyLimiter, async (req, res) => {
       userId: uid, amount, upiId, status: "PENDING",
       walletTxId: txId, createdAt: admin.database.ServerValue.TIMESTAMP,
     };
+    // Auto-checks: same UPI / same device on many accounts, big amount. Admin-only (not mirrored to the user).
+    const riskFlags = await withdrawalRiskFlags(uid, upiId, amount, String(req.body?.deviceId || "").slice(0, 64));
+    const adminRecord = riskFlags.length ? { ...record, flags: riskFlags, flagged: true } : record;
     await db.ref().update({
-      [`withdrawals/${withdrawalId}`]: record,
+      [`withdrawals/${withdrawalId}`]: adminRecord,
       // Mirror under the user's own subtree so the app can show "my
       // withdrawals" for a normal user, who otherwise has no permission to
       // list the top-level withdrawals node (that's admin-only in the rules).
@@ -2337,7 +2319,13 @@ async function reconcileJoinedSlots() {
       const claimed = matchSnapshot.child("slotIndex").numChildren();
       const current = Number(matchSnapshot.child("joinedSlots").val() || 0);
       if (Number.isInteger(claimed) && claimed >= 0 && claimed !== current) {
-        db.ref(`tournaments/${matchSnapshot.key}/joinedSlots`).set(claimed).catch(() => {});
+        // Transaction on the parent: if the match was deleted meanwhile, abort instead of
+        // re-creating a stub { joinedSlots: n } node (that made deleted matches reappear).
+        db.ref(`tournaments/${matchSnapshot.key}`).transaction((cur) => {
+          if (cur === null || typeof cur !== "object") return undefined;
+          cur.joinedSlots = claimed;
+          return cur;
+        }).catch(() => {});
       }
     });
   } catch (error) {
@@ -2582,6 +2570,217 @@ app.post("/support/chat", supportChatLimiter, async (req, res) => {
   } catch (error) {
     console.error("support chat error", error.message);
     return res.status(502).json({ error: "AI assistant is busy. Please try again or open Help Center -> Support." });
+  }
+});
+
+
+// ---------------------------------------------------------------------------
+// WITHDRAWAL AUTO-CHECKS — flags are shown to the admin on the withdrawal page.
+// ---------------------------------------------------------------------------
+const LARGE_WITHDRAWAL_COINS = Number(process.env.LARGE_WITHDRAWAL_COINS || 1000);
+function sha256Hex(value) { return require("node:crypto").createHash("sha256").update(String(value)).digest("hex"); }
+
+async function withdrawalRiskFlags(uid, upiId, amount, deviceId) {
+  const flags = [];
+  try {
+    const sameUpi = await db.ref("withdrawals").orderByChild("upiId").equalTo(upiId).once("value");
+    const others = new Set();
+    sameUpi.forEach((child) => {
+      const other = String(child.child("userId").val() || "");
+      if (other && other !== uid) others.add(other);
+    });
+    if (others.size > 0) flags.push(`SAME_UPI_${others.size + 1}_ACCOUNTS`);
+  } catch (error) { console.error("upi check failed", error.message); }
+  try {
+    if (deviceId) {
+      const key = sha256Hex(deviceId).slice(0, 32);
+      await db.ref(`device_index/${key}/${uid}`).set(true);
+      const users = await db.ref(`device_index/${key}`).once("value");
+      const n = users.numChildren();
+      if (n > 1) flags.push(`SAME_DEVICE_${n}_ACCOUNTS`);
+    }
+  } catch (error) { console.error("device check failed", error.message); }
+  if (amount >= LARGE_WITHDRAWAL_COINS) flags.push(`LARGE_AMOUNT_${amount}`);
+  return flags;
+}
+
+// ---------------------------------------------------------------------------
+// MATCH START REMINDER — ~10 minutes before startAt, only the joined players.
+// ---------------------------------------------------------------------------
+const REMINDER_LEAD_MS = 10 * 60 * 1000;
+let reminderWorkerRunning = false;
+async function processMatchReminders() {
+  if (reminderWorkerRunning) return;
+  reminderWorkerRunning = true;
+  try {
+    const now = Date.now();
+    const snapshot = await db.ref("tournaments").orderByChild("startAt")
+      .startAt(now + 30_000).endAt(now + REMINDER_LEAD_MS).once("value");
+    const jobs = [];
+    snapshot.forEach((t) => {
+      const status = String(t.child("status").val() || "").toUpperCase();
+      if (["CANCELLED", "DRAFT", "COMPLETED", "RESULT_PUBLISHED"].includes(status)) return;
+      if (t.child("active").val() === false) return;
+      jobs.push({ id: t.key, startAt: Number(t.child("startAt").val() || 0), title: String(t.child("title").val() || "Your match") });
+    });
+    for (const job of jobs) {
+      // Claim per start time, so a rescheduled match is reminded again for its new time.
+      const claimed = await db.ref(`matches/${job.id}/reminderFor`)
+        .transaction((current) => Number(current) === job.startAt ? undefined : job.startAt);
+      if (!claimed.committed) continue;
+      const matchSnap = await db.ref(`matches/${job.id}`).once("value");
+      const uids = await getJoinedUids(matchSnap);
+      if (!uids.length) continue;
+      const mins = Math.max(1, Math.round((job.startAt - Date.now()) / 60000));
+      const body = `${job.title} starts in about ${mins} minutes. Get ready!`;
+      await createUserNotifications(uids, "Match starting soon ⏰", body, "MATCH_REMINDER", { matchId: job.id });
+      const tokens = [];
+      for (const uid of uids) {
+        const token = (await db.ref(`users/${uid}/fcmToken`).once("value")).val();
+        if (token) tokens.push(token);
+      }
+      await sendPush(tokens, "Match starting soon ⏰", body, { type: "MATCH_REMINDER", matchId: job.id });
+    }
+  } catch (error) {
+    console.error("match reminder worker error", error.message);
+  } finally {
+    reminderWorkerRunning = false;
+  }
+}
+setInterval(processMatchReminders, 30_000);
+
+// ---------------------------------------------------------------------------
+// AUTO BACKUP — once a day (IST) key data is copied to backups/{yyyy-mm-dd}; last 3 days are kept.
+// ---------------------------------------------------------------------------
+const BACKUP_NODES = ["users", "tournaments", "matches", "withdrawals", "deposits", "reports", "disputes",
+  "activity_logs", "coin_history", "appConfig", "faq", "banners", "gameModes", "admin_keys"];
+const BACKUP_KEEP_DAYS = Number(process.env.BACKUP_KEEP_DAYS || 3);
+let backupRunning = false;
+function istDay() { return new Date(Date.now() + 5.5 * 3600 * 1000).toISOString().slice(0, 10); }
+
+async function runBackup(force = false) {
+  if (backupRunning) return { skipped: true };
+  backupRunning = true;
+  try {
+    const day = istDay();
+    if (!force && (await db.ref(`backup_index/${day}`).once("value")).exists()) return { skipped: true, day };
+    for (const node of BACKUP_NODES) {
+      const snap = await db.ref(node).once("value");
+      await db.ref(`backups/${day}/${node}`).set(snap.exists() ? snap.val() : null);
+    }
+    await db.ref(`backup_index/${day}`).set(admin.database.ServerValue.TIMESTAMP);
+    const index = (await db.ref("backup_index").once("value")).val() || {};
+    const days = Object.keys(index).sort();
+    while (days.length > BACKUP_KEEP_DAYS) {
+      const old = days.shift();
+      await db.ref(`backups/${old}`).remove();
+      await db.ref(`backup_index/${old}`).remove();
+    }
+    console.log("backup done", day);
+    return { day };
+  } catch (error) {
+    console.error("backup error", error.message);
+    return { error: error.message };
+  } finally {
+    backupRunning = false;
+  }
+}
+setInterval(() => runBackup(false), 60 * 60 * 1000);
+setTimeout(() => runBackup(false), 90_000);
+
+app.post("/admin/backupNow", requireAdmin((role) => role === "MASTER_ADMIN" || role === "SUPER_ADMIN"), async (req, res) => {
+  const result = await runBackup(true);
+  if (result.error) return res.status(500).json({ error: "Backup failed" });
+  await logActivity(req.decoded.uid, "BACKUP_NOW", result.day || "");
+  return res.status(200).json({ ok: true, day: result.day });
+});
+
+// ---------------------------------------------------------------------------
+// REFERRAL — each user has a code; a NEW user (<= 7 days old) redeems a friend's code once,
+// both get bonus coins (playable, not withdrawable). Bonus size: appConfig/referralBonus (default 10).
+// ---------------------------------------------------------------------------
+async function ensureReferralCode(uid) {
+  const existing = (await db.ref(`referral_users/${uid}/code`).once("value")).val();
+  if (existing) return existing;
+  const hash = sha256Hex(uid).toUpperCase();
+  for (let len = 6; len <= 12; len++) {
+    const code = hash.slice(0, len);
+    const claim = await db.ref(`referral_codes/${code}`).transaction((cur) => (cur === null || cur === uid ? uid : undefined));
+    if (claim.committed) {
+      await db.ref(`referral_users/${uid}/code`).set(code);
+      return code;
+    }
+  }
+  throw new Error("code generation failed");
+}
+
+async function referralBonusCoins() {
+  const v = Number((await db.ref("appConfig/referralBonus").once("value")).val());
+  return Number.isFinite(v) && v > 0 && v <= 1000 ? Math.floor(v) : 10;
+}
+
+async function creditReferralBonus(uid, amount, title, refId) {
+  await db.ref(`users/${uid}/wallet`).transaction((current) => {
+    const wallet = current && typeof current === "object" ? { ...current } : {};
+    wallet.balance = Number(wallet.balance || 0) + amount;
+    wallet.withdrawableBalance = Math.max(0, Number(wallet.withdrawableBalance || 0));
+    return wallet;
+  });
+  await db.ref(`users/${uid}/wallet/transactions/referral_${refId}`).set({
+    type: "REFERRAL_BONUS", title, amount, timestamp: admin.database.ServerValue.TIMESTAMP, status: "SUCCESS",
+  });
+}
+
+async function verifiedUid(req, res) {
+  const idToken = getBearerToken(req);
+  if (!idToken) { res.status(401).json({ error: "Missing Firebase authorization token" }); return null; }
+  try { return (await admin.auth().verifyIdToken(idToken)).uid; }
+  catch (_e) { res.status(401).json({ error: "Invalid Firebase authorization token" }); return null; }
+}
+
+app.post("/referral/me", async (req, res) => {
+  const uid = await verifiedUid(req, res);
+  if (!uid) return;
+  try {
+    const code = await ensureReferralCode(uid);
+    const info = (await db.ref(`referral_users/${uid}`).once("value")).val() || {};
+    return res.status(200).json({
+      code, bonus: await referralBonusCoins(),
+      invited: Number(info.count || 0), alreadyRedeemed: !!info.redeemedCode,
+    });
+  } catch (error) {
+    console.error("referral/me error", error.message);
+    return res.status(500).json({ error: "Could not load referral code" });
+  }
+});
+
+app.post("/referral/redeem", moneyLimiter, async (req, res) => {
+  const uid = await verifiedUid(req, res);
+  if (!uid) return;
+  const code = String(req.body?.code || "").trim().toUpperCase();
+  if (!/^[A-F0-9]{6,12}$/.test(code)) return res.status(400).json({ error: "Invalid referral code" });
+  try {
+    const referrer = (await db.ref(`referral_codes/${code}`).once("value")).val();
+    if (!referrer) return res.status(404).json({ error: "Referral code not found" });
+    if (referrer === uid) return res.status(400).json({ error: "You cannot use your own code" });
+    const user = await admin.auth().getUser(uid);
+    const ageMs = Date.now() - new Date(user.metadata.creationTime).getTime();
+    if (ageMs > 7 * 24 * 3600 * 1000) {
+      return res.status(403).json({ error: "Referral code can only be used within 7 days of signing up" });
+    }
+    const claim = await db.ref(`referral_users/${uid}/redeemedCode`)
+      .transaction((cur) => (cur === null ? code : undefined));
+    if (!claim.committed) return res.status(409).json({ error: "You already used a referral code" });
+    const bonus = await referralBonusCoins();
+    await creditReferralBonus(uid, bonus, "Referral bonus (joined with a code)", `in_${uid}`);
+    await creditReferralBonus(referrer, bonus, "Referral bonus (friend joined)", `out_${uid}`);
+    await db.ref(`referral_users/${referrer}/count`).transaction((c) => Number(c || 0) + 1);
+    await db.ref(`referral_users/${uid}/referredBy`).set(referrer);
+    await logActivity(uid, "REFERRAL_REDEEMED", `${code} • ${bonus} coins each`);
+    return res.status(200).json({ ok: true, bonus });
+  } catch (error) {
+    console.error("referral/redeem error", error.message);
+    return res.status(500).json({ error: "Could not redeem referral code" });
   }
 });
 
