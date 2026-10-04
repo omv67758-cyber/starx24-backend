@@ -968,7 +968,24 @@ app.post("/joinMatch", moneyLimiter, async (req, res) => {
     // a real round-trip to the database first, so by the time .transaction()
     // runs, the SDK already has the authoritative wallet object cached and
     // the callback's first invocation sees the real balance, not a stale null.
-    await walletRef.once("value").catch(() => null);
+    const walletPreSnap = await walletRef.once("value").catch(() => null);
+    const walletExists = !!walletPreSnap && walletPreSnap.exists();
+    const preBalanceRaw = walletExists ? Number(walletPreSnap.child("balance").val() || 0) : 0;
+    const preBalance = Number.isFinite(preBalanceRaw) ? preBalanceRaw : 0;
+
+    // FIX (0-coin join): a paid match must NEVER be joined by a player whose
+    // wallet is missing or too small. Check BEFORE touching any slot, so a
+    // broke player never claims a slot, never bumps joinedSlots and never
+    // shows up in the player list. Slot cost = per-slot fee x slots requested.
+    if (perSlotFee > 0) {
+      const requiredUpfront = perSlotFee * quantity;
+      if (preBalance < requiredUpfront) {
+        await participantRef.remove().catch(() => {});
+        return res.status(409).json({
+          error: `You have ${preBalance} coins but need ${requiredUpfront} to join with ${quantity} slot(s)`
+        });
+      }
+    }
 
     const claimedSlotNumbers = [];
     if (requestedSlots.length > 0) {
@@ -1019,7 +1036,11 @@ app.post("/joinMatch", moneyLimiter, async (req, res) => {
       const debit = await walletRef.transaction((current) => {
         // FIX: first call gets a local guess (null). Returning undefined would
         // ABORT (not retry). Return null so Firebase fetches the real wallet and retries.
-        if (current === null) return current;
+        // FIX (0-coin join): returning null when the wallet node really does not
+        // exist COMMITS the transaction with no debit (this let players with 0 coins
+        // join paid matches). Only retry on null when the pre-read proved the wallet
+        // exists (cold-start guess); otherwise abort.
+        if (current === null) return walletExists ? current : undefined;
         const wallet = current && typeof current === "object" ? { ...current } : {};
         const balance = Number(wallet.balance || 0);
         const withdrawable = Math.max(0, Math.min(balance, Number(wallet.withdrawableBalance || 0)));
@@ -1033,7 +1054,9 @@ app.post("/joinMatch", moneyLimiter, async (req, res) => {
         debitedWithdrawable = fromWinnings;
         return wallet;
       });
-      if (!debit.committed) {
+      // A commit where the callback never saw a real wallet object means nothing was debited.
+      if (!debit.committed || !sawDuringTransaction) {
+        debitedAmount = 0;
         for (const ref of claimedSlotRefs) await ref.transaction((current) => current === decoded.uid ? null : undefined).catch(() => {});
         await participantRef.remove().catch(() => {});
         // Read the balance again (outside the failed transaction) purely to make
@@ -2268,6 +2291,46 @@ async function processDailyMatches() {
 setInterval(processDailyMatches, 30_000);
 processDailyMatches();
 
+// ---------------------------------------------------------------------------
+// Auto delete completed matches. Admin app: More > "Auto delete completed matches" writes
+// appConfig/autoDeleteCompletedHours (0 / missing = OFF). A match is removed that many hours after its
+// result was published. Only COMPLETED / RESULT_PUBLISHED / RESULTED matches are touched (never live
+// or upcoming ones), and a daily match whose next copy does not exist yet is kept.
+// ---------------------------------------------------------------------------
+let completedCleanupRunning = false;
+async function processCompletedCleanup() {
+  if (completedCleanupRunning) return;
+  completedCleanupRunning = true;
+  try {
+    const hours = Number((await db.ref("appConfig/autoDeleteCompletedHours").once("value")).val() || 0);
+    if (!(hours > 0)) return;
+    const cutoffMs = hours * 60 * 60 * 1000;
+    const now = Date.now();
+    const snapshot = await db.ref("tournaments").once("value");
+    const doomed = [];
+    snapshot.forEach((child) => {
+      const t = child.val() || {};
+      const status = String(t.status || "").toUpperCase();
+      if (status !== "COMPLETED" && status !== "RESULT_PUBLISHED" && status !== "RESULTED") return;
+      if (t.dailyMode === true && !t.dailyNextId) return;   // keep the series alive
+      const doneAt = Number(t.resultPublishedAt || 0) || Number(t.startAt || 0);
+      if (doneAt <= 0 || now - doneAt < cutoffMs) return;
+      doomed.push(child.key);
+    });
+    for (const id of doomed) {
+      await db.ref(`tournaments/${id}`).remove();
+      await db.ref(`matches/${id}`).remove().catch(() => {});
+      console.log(`completedCleanup: deleted ${id}`);
+    }
+  } catch (error) {
+    console.error("processCompletedCleanup error", error.message);
+  } finally {
+    completedCleanupRunning = false;
+  }
+}
+setInterval(processCompletedCleanup, 5 * 60_000);
+processCompletedCleanup();
+
 // PUBLIC PROFILE BACKFILL — runs once. Copies name / bio / photo (nothing else) of every existing
 // user into publicProfiles/{uid}, so old accounts show up in player search even before they open
 // their Profile tab. New / edited profiles are kept in sync by the app itself.
@@ -2305,29 +2368,76 @@ async function backfillPublicProfiles() {
 }
 backfillPublicProfiles();
 
-// SLOT RECONCILER — joinedSlots used to drift from the real slotIndex claims
-// (admin hand-edits, partial legacy joins, mirrored writes). Every minute the
-// server recounts tournaments/{id}/slotIndex and repairs any mismatch so the
-// fill bar / "spots left" / FULL badge on every device stays truthful.
+// SLOT RECONCILER — participants/{uid} (status REGISTERED) is the single source of truth.
+// Every minute the server rebuilds slotIndex + joinedSlots from it, so the match list
+// ("2/40"), the match detail screen ("0/40") and the slot picker (TAKEN rows) always agree.
+// Ghost slot claims (slot taken but no registered player behind it, e.g. from a failed or
+// interrupted join) are released. Claims younger than 2 minutes with a live RESERVING
+// participant are left alone so in-flight joins are never broken.
 let slotReconcilerRunning = false;
 async function reconcileJoinedSlots() {
   if (slotReconcilerRunning) return;
   slotReconcilerRunning = true;
   try {
     const snapshot = await db.ref("tournaments").once("value");
+    const now = Date.now();
+    const jobs = [];
     snapshot.forEach((matchSnapshot) => {
-      const claimed = matchSnapshot.child("slotIndex").numChildren();
+      const matchId = matchSnapshot.key;
+      const participants = matchSnapshot.child("participants");
+      const slotIndex = matchSnapshot.child("slotIndex");
+      const registeredSlots = new Set();   // slot numbers owned by a REGISTERED player
+      const ownerOfSlot = new Map();
+      const liveReserving = new Set();     // uids mid-join (RESERVING < 2 min old)
+      participants.forEach((p) => {
+        const v = p.val() || {};
+        const status = String(v.status || "");
+        if (status === "RESERVING") {
+          if (now - Number(v.reservedAt || 0) <= 2 * 60 * 1000) liveReserving.add(p.key);
+          return;
+        }
+        let nums = Array.isArray(v.slotNumbers) ? v.slotNumbers : (v.slotNumber ? [v.slotNumber] : []);
+        nums = nums.map(Number).filter((n) => Number.isInteger(n) && n > 0);
+        if (nums.length === 0) nums = [0]; // legacy record without a slot still counts as 1 player
+        nums.forEach((n) => { if (n > 0) { registeredSlots.add(n); ownerOfSlot.set(n, p.key); } });
+      });
+      let registeredCount = 0;
+      participants.forEach((p) => {
+        const v = p.val() || {};
+        if (String(v.status || "") === "RESERVING") return;
+        const nums = Array.isArray(v.slotNumbers) && v.slotNumbers.length ? v.slotNumbers.length : 1;
+        registeredCount += nums;
+      });
+
+      const updates = {};
+      // 1) release ghost claims
+      slotIndex.forEach((slot) => {
+        const n = Number(slot.key);
+        const owner = String(slot.val() || "");
+        if (liveReserving.has(owner)) return;
+        if (!registeredSlots.has(n) || ownerOfSlot.get(n) !== owner) {
+          updates[`tournaments/${matchId}/slotIndex/${slot.key}`] = null;
+        }
+      });
+      // 2) restore missing claims for registered players
+      registeredSlots.forEach((n) => {
+        if (!slotIndex.hasChild(String(n))) updates[`tournaments/${matchId}/slotIndex/${n}`] = ownerOfSlot.get(n);
+      });
+      // 3) joinedSlots = real registered slot count
       const current = Number(matchSnapshot.child("joinedSlots").val() || 0);
-      if (Number.isInteger(claimed) && claimed >= 0 && claimed !== current) {
-        // Transaction on the parent: if the match was deleted meanwhile, abort instead of
-        // re-creating a stub { joinedSlots: n } node (that made deleted matches reappear).
-        db.ref(`tournaments/${matchSnapshot.key}`).transaction((cur) => {
-          if (cur === null || typeof cur !== "object") return undefined;
-          cur.joinedSlots = claimed;
-          return cur;
-        }).catch(() => {});
+      const live = liveReserving.size; // in-flight joins: don't fight them, next tick settles
+      if (live === 0 && current !== registeredCount) {
+        updates[`tournaments/${matchId}/joinedSlots`] = registeredCount;
       }
+      if (Object.keys(updates).length) jobs.push({ matchId, updates });
     });
+    for (const job of jobs) {
+      // Parent-exists guard: a deleted match must not be re-created by a stray write.
+      const exists = (await db.ref(`tournaments/${job.matchId}/title`).once("value")).exists()
+        || (await db.ref(`tournaments/${job.matchId}/totalSlots`).once("value")).exists();
+      if (!exists) continue;
+      await db.ref().update(job.updates).catch(() => {});
+    }
   } catch (error) {
     console.error("slot reconciler error", error.message);
   } finally {
