@@ -72,16 +72,20 @@ const databaseURL = process.env.FIREBASE_DATABASE_URL?.trim()
   || `https://${serviceAccount.project_id}-default-rtdb.firebaseio.com`;
 const zapupiKey = process.env.ZAPUPI_KEY?.trim();
 const zapupiMode = (process.env.ZAPUPI_MODE || "TEST").trim().toUpperCase();
+const railwayDomain = process.env.RAILWAY_PUBLIC_DOMAIN?.trim();
 const publicBaseUrl = (process.env.PUBLIC_BASE_URL?.trim()
-  || process.env.RENDER_EXTERNAL_URL?.trim())?.replace(/\/+$/, "");
+  || process.env.RENDER_EXTERNAL_URL?.trim()
+  || (railwayDomain ? `https://${railwayDomain}` : ""))?.replace(/\/+$/, "");
 // Same bootstrap master identity the Firebase rules and the Android app's
 // admin_keys/admin_sessions RBAC already trust. Keeping this in sync with
 // database.rules.json means the owner's Gmail account works as MASTER_ADMIN
 // here too, without introducing a second (custom-claims) admin system.
 const MASTER_EMAIL = (process.env.MASTER_EMAIL || "mitakarmakar117@gmail.com").trim().toLowerCase();
 
-if (!zapupiKey) throw new Error("Missing ZAPUPI_KEY");
-if (!publicBaseUrl) throw new Error("Missing PUBLIC_BASE_URL");
+// Don't crash the whole server (and fail Railway's /health check) if these are
+// missing - warn loudly instead. Payment endpoints will error until they're set.
+if (!zapupiKey) console.error("WARNING: ZAPUPI_KEY is not set - payments will not work until you add it in Railway > Variables");
+if (!publicBaseUrl) console.error("WARNING: PUBLIC_BASE_URL is not set - set it to your Railway public URL (https://xxxx.up.railway.app)");
 
 admin.initializeApp({
   credential: admin.credential.cert(serviceAccount),
@@ -2511,7 +2515,7 @@ scrubPublicSecrets();
 // on a paid plan where sleeping is no longer possible).
 if ((process.env.KEEP_ALIVE || "true").trim().toLowerCase() !== "false") {
   const KEEP_ALIVE_INTERVAL_MS = 10 * 60 * 1000; // 10 minutes, comfortably under the 15-minute sleep window
-  setInterval(() => {
+  if (publicBaseUrl) setInterval(() => {
     fetch(`${publicBaseUrl}/health`).catch(() => {
       // A missed ping just means one skipped keep-alive tick; the next
       // real user request still works, it just may pay the cold-start cost.
@@ -2914,6 +2918,9 @@ app.post("/referral/redeem", moneyLimiter, async (req, res) => {
   }
 });
 
-app.listen(port, () => {
+process.on("unhandledRejection", (err) => console.error("unhandledRejection", err));
+process.on("uncaughtException", (err) => console.error("uncaughtException", err));
+
+app.listen(port, "0.0.0.0", () => {
   console.log(`STARX24 payment backend listening on port ${port}`);
 });
