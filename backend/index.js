@@ -67,7 +67,21 @@ function readServiceAccount() {
   };
 }
 
-const serviceAccount = readServiceAccount();
+let serviceAccount;
+try {
+  serviceAccount = readServiceAccount();
+} catch (configError) {
+  // Keep the process alive (so Railway's /health check passes and the deploy stays up)
+  // and expose the REAL reason in the logs and on "/" instead of crash-looping.
+  console.error("FATAL CONFIG ERROR:", configError.message);
+  console.error("Fix it in Railway > Variables (FIREBASE_SERVICE_ACCOUNT or FIREBASE_SERVICE_ACCOUNT_BASE64), then redeploy.");
+  require("node:http").createServer((req, res) => {
+    const healthy = req.url === "/health";
+    res.writeHead(healthy ? 200 : 503, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ status: healthy ? "ok" : "misconfigured", error: configError.message }));
+  }).listen(Number(process.env.PORT || 3000), "0.0.0.0");
+  return;
+}
 const databaseURL = process.env.FIREBASE_DATABASE_URL?.trim()
   || `https://${serviceAccount.project_id}-default-rtdb.firebaseio.com`;
 const zapupiKey = process.env.ZAPUPI_KEY?.trim();
@@ -107,6 +121,12 @@ app.get("/", (_req, res) => {
 
 app.get("/health", (_req, res) => {
   res.status(200).json({ status: "ok" });
+});
+
+// Start listening NOW (before the heavy background jobs below) so Railway's
+// health check gets an answer immediately. Routes registered later still work.
+app.listen(port, "0.0.0.0", () => {
+  console.log(`STARX24 payment backend listening on port ${port}`);
 });
 
 function getBearerToken(req) {
@@ -2921,6 +2941,3 @@ app.post("/referral/redeem", moneyLimiter, async (req, res) => {
 process.on("unhandledRejection", (err) => console.error("unhandledRejection", err));
 process.on("uncaughtException", (err) => console.error("uncaughtException", err));
 
-app.listen(port, "0.0.0.0", () => {
-  console.log(`STARX24 payment backend listening on port ${port}`);
-});
