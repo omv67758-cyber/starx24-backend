@@ -1770,6 +1770,14 @@ app.post("/admin/settleTournament", requireAdmin(isMasterOrResultsCoins), async 
     }
     const title = String(tournament.title || tournament.name || "Match");
     const lossMessage = String(req.body?.lossMessage || "").trim().slice(0, 300);
+    // Optional admin message per player (1VS1): { [uid]: "text" } — shown in that player's notice and on the match leaderboard.
+    const playerMessages = {};
+    if (req.body?.playerMessages && typeof req.body.playerMessages === "object") {
+      for (const [k, v] of Object.entries(req.body.playerMessages)) {
+        const text = String(v || "").trim().slice(0, 300);
+        if (text) playerMessages[String(k)] = text;
+      }
+    }
     const refundMessage = String(req.body?.refundMessage || "").trim().slice(0, 300);
     const participantsSnap = await db.ref(`tournaments/${tournamentId}/participants`).once("value");
     const participants = {};
@@ -1896,6 +1904,7 @@ app.post("/admin/settleTournament", requireAdmin(isMasterOrResultsCoins), async 
           rows[playerUid] = { username: String(participants[playerUid].gameName || participants[playerUid].name || "Player"),
             side: participantIds.indexOf(playerUid) === 0 ? "LEFT" : "RIGHT", placement: ordered.indexOf(playerUid) + 1,
             kills: 0, coins: amounts[playerUid], result: kind, payout: battleRefund ? "REFUND" : "MANUAL" };
+          if (playerMessages[playerUid]) rows[playerUid].message = playerMessages[playerUid];
         }
       } else if (pool <= 0) {
         return res.status(422).json({ error: "Set a positive coin prize pool or entry fee for this 1VS1 tournament" });
@@ -1996,6 +2005,7 @@ app.post("/admin/settleTournament", requireAdmin(isMasterOrResultsCoins), async 
         noticeTitle = "LOSS — " + title;
         message = lossMessage || `Your result for ${title} is recorded. Better luck in the next match.`;
       }
+      if (playerMessages[uid]) message = playerMessages[uid];
       await queueResultNotice(tournamentId, uid, kind, noticeTitle, message);
     }
     await logActivity(req.decoded.uid, "TOURNAMENT_SETTLED",
