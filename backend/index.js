@@ -1765,7 +1765,7 @@ app.post("/admin/settleTournament", requireAdmin(isMasterOrResultsCoins), async 
     const requestedSystem = String(req.body?.resultSystem || system).trim().toUpperCase();
     if (requestedSystem !== system) return res.status(409).json({ error: "Result system does not match this tournament" });
     const startAt = Number(tournament.startAt || 0);
-    if (system !== "KILL" && req.body?.battleRefund !== true && (!startAt || startAt > Date.now())) {
+    if (system !== "KILL" && req.body?.battleRefund !== true && tournament.noOpponent !== true && (!startAt || startAt > Date.now())) {
       return res.status(409).json({ error: "Match must reach its scheduled start before result settlement" });
     }
     const title = String(tournament.title || tournament.name || "Match");
