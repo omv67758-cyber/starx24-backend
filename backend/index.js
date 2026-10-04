@@ -2389,11 +2389,13 @@ async function reconcileJoinedSlots() {
       const registeredSlots = new Set();   // slot numbers owned by a REGISTERED player
       const ownerOfSlot = new Map();
       const liveReserving = new Set();     // uids mid-join (RESERVING < 2 min old)
+      const staleReserving = [];           // abandoned joins (RESERVING > 2 min old)
       participants.forEach((p) => {
         const v = p.val() || {};
         const status = String(v.status || "");
         if (status === "RESERVING") {
           if (now - Number(v.reservedAt || 0) <= 2 * 60 * 1000) liveReserving.add(p.key);
+          else staleReserving.push(p.key); // never finished paying -> not a participant, delete it
           return;
         }
         let nums = Array.isArray(v.slotNumbers) ? v.slotNumbers : (v.slotNumber ? [v.slotNumber] : []);
@@ -2423,6 +2425,8 @@ async function reconcileJoinedSlots() {
       registeredSlots.forEach((n) => {
         if (!slotIndex.hasChild(String(n))) updates[`tournaments/${matchId}/slotIndex/${n}`] = ownerOfSlot.get(n);
       });
+      // 2b) drop abandoned RESERVING records (no payment, no slot = not a participant)
+      staleReserving.forEach((uid) => { updates[`tournaments/${matchId}/participants/${uid}`] = null; });
       // 3) joinedSlots = real registered slot count
       const current = Number(matchSnapshot.child("joinedSlots").val() || 0);
       const live = liveReserving.size; // in-flight joins: don't fight them, next tick settles
