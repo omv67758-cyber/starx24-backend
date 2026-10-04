@@ -1765,7 +1765,7 @@ app.post("/admin/settleTournament", requireAdmin(isMasterOrResultsCoins), async 
     const requestedSystem = String(req.body?.resultSystem || system).trim().toUpperCase();
     if (requestedSystem !== system) return res.status(409).json({ error: "Result system does not match this tournament" });
     const startAt = Number(tournament.startAt || 0);
-    if (system !== "KILL" && (!startAt || startAt > Date.now())) {
+    if (system !== "KILL" && req.body?.battleRefund !== true && (!startAt || startAt > Date.now())) {
       return res.status(409).json({ error: "Match must reach its scheduled start before result settlement" });
     }
     const title = String(tournament.title || tournament.name || "Match");
@@ -1867,7 +1867,11 @@ app.post("/admin/settleTournament", requireAdmin(isMasterOrResultsCoins), async 
         if (rows[uid].survived === undefined) delete rows[uid].survived;
       }
     } else {
-      if (participantIds.length !== 2) return res.status(422).json({ error: "A 1VS1 tournament must have exactly two registered players" });
+      const manualBattle = req.body?.battleCoins && typeof req.body.battleCoins === "object";
+      // Manual coins / refund works with 1 or 2 registered players (a lone player must still be payable/refundable).
+      if (!participantIds.length) return res.status(422).json({ error: "No registered players to settle" });
+      if (!manualBattle && participantIds.length !== 2) return res.status(422).json({ error: "A 1VS1 tournament must have exactly two registered players" });
+      const battleRefund = manualBattle && req.body?.battleRefund === true;
       participantIds.sort((a, b) => (Number(participants[a].slotNumber) || 999) - (Number(participants[b].slotNumber) || 999)
         || String(participants[a].gameName || a).localeCompare(String(participants[b].gameName || b)));
       const payoutOption = String(req.body?.payoutOption || "").trim().toUpperCase().replace(/[ /-]/g, "_");
@@ -1879,18 +1883,19 @@ app.post("/admin/settleTournament", requireAdmin(isMasterOrResultsCoins), async 
         const amounts = {};
         for (const playerUid of participantIds) {
           const raw = battleCoins[playerUid];
-          if (raw === undefined || raw === null || raw === "") return res.status(422).json({ error: "Enter coins for both players" });
+          if (raw === undefined || raw === null || raw === "") return res.status(422).json({ error: "Enter coins for every player" });
           amounts[playerUid] = safeCoinTarget(raw);
         }
         const top = Math.max(...participantIds.map((playerUid) => amounts[playerUid]));
         const ordered = [...participantIds].sort((a, b) => amounts[b] - amounts[a]);
         for (const playerUid of participantIds) {
-          const win = top > 0 && amounts[playerUid] === top;
+          const win = !battleRefund && top > 0 && amounts[playerUid] === top && (participantIds.length === 1 || participantIds.some((o) => amounts[o] !== top));
+          const kind = battleRefund ? "REFUND" : (win ? "WIN" : "LOSS");
           rewards[playerUid] = amounts[playerUid];
-          noticeTypes[playerUid] = win ? "WIN" : "LOSS";
+          noticeTypes[playerUid] = kind;
           rows[playerUid] = { username: String(participants[playerUid].gameName || participants[playerUid].name || "Player"),
             side: participantIds.indexOf(playerUid) === 0 ? "LEFT" : "RIGHT", placement: ordered.indexOf(playerUid) + 1,
-            kills: 0, coins: amounts[playerUid], result: win ? "WIN" : "LOSS", payout: "MANUAL" };
+            kills: 0, coins: amounts[playerUid], result: kind, payout: battleRefund ? "REFUND" : "MANUAL" };
         }
       } else if (pool <= 0) {
         return res.status(422).json({ error: "Set a positive coin prize pool or entry fee for this 1VS1 tournament" });
@@ -1984,8 +1989,9 @@ app.post("/admin/settleTournament", requireAdmin(isMasterOrResultsCoins), async 
         noticeTitle = "WIN — " + title;
         message = `Congratulations! You won ${safeCoinTarget(rewards[uid])} coins in ${title}.`;
       } else if (kind === "REFUND") {
-        noticeTitle = "20% REFUND — " + title;
-        message = refundMessage || `You did not join ${title}; your 20% refund of ${safeCoinTarget(rewards[uid])} coins has been credited.`;
+        noticeTitle = (req.body?.battleRefund === true ? "REFUND — " : "20% REFUND — ") + title;
+        message = req.body?.battleRefund === true ? `Your ${safeCoinTarget(rewards[uid])} coins for ${title} have been refunded to your wallet.`
+          : refundMessage || `You did not join ${title}; your 20% refund of ${safeCoinTarget(rewards[uid])} coins has been credited.`;
       } else {
         noticeTitle = "LOSS — " + title;
         message = lossMessage || `Your result for ${title} is recorded. Better luck in the next match.`;
