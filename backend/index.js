@@ -504,6 +504,20 @@ async function settleOrder(orderId, storedOrder) {
   return "pending";
 }
 
+// FIX (notification delay): FCM messages default to NORMAL priority, which Android
+// batches/defers while the phone is idle (Doze) -> pushes arrived minutes late.
+// HIGH priority + the app's own heads-up channel + a short TTL (a stale "room is live"
+// push is useless) makes delivery immediate.
+const PUSH_CHANNEL_ID = "starx24_announcements";
+function androidPushConfig() {
+  return {
+    priority: "high",
+    ttl: 10 * 60 * 1000,
+    notification: { channelId: PUSH_CHANNEL_ID, priority: "high", defaultSound: true },
+  };
+}
+const APNS_PUSH_CONFIG = { headers: { "apns-priority": "10" } };
+
 async function sendPush(tokens, title, body, data = {}) {
   const usable = Array.from(new Set((tokens || []).filter(Boolean)));
   for (let offset = 0; offset < usable.length; offset += 500) {
@@ -513,8 +527,16 @@ async function sendPush(tokens, title, body, data = {}) {
       tokens: chunk,
       notification: { title, body },
       data: Object.fromEntries(Object.entries(data).map(([key, value]) => [key, String(value)])),
+      android: androidPushConfig(),
+      apns: APNS_PUSH_CONFIG,
     });
   }
+}
+
+async function getTokensForUids(uids) {
+  const values = await Promise.all((uids || []).map((uid) =>
+    db.ref(`users/${uid}/fcmToken`).once("value").then((snap) => snap.val()).catch(() => null)));
+  return values.filter((t) => typeof t === "string" && t.trim()).map((t) => t.trim());
 }
 
 async function getAllUserTokens() {
@@ -672,16 +694,14 @@ async function processRoomReleases() {
       });
 
       const uids = await getJoinedUids(job.snapshot);
-      await createUserNotifications(uids, "Room details are live",
-        "Your match Room ID and password are now available.", "ROOM_RELEASED",
-        { matchId: job.id });
-      const tokens = [];
-      for (const uid of uids) {
-        const token = (await db.ref(`users/${uid}/fcmToken`).once("value")).val();
-        if (token) tokens.push(token);
-      }
-      await sendPush(tokens, "Room details are live",
-        "Your match Room ID and password are now available.", { type: "ROOM_RELEASED", matchId: job.id });
+      const tokens = await getTokensForUids(uids);
+      await Promise.all([
+        sendPush(tokens, "Room details are live",
+          "Your match Room ID and password are now available.", { type: "ROOM_RELEASED", matchId: job.id }),
+        createUserNotifications(uids, "Room details are live",
+          "Your match Room ID and password are now available.", "ROOM_RELEASED",
+          { matchId: job.id }),
+      ]);
       await db.ref(`matches/${job.id}/roomRelease/pushSent`).set(true);
     }
   } catch (error) {
@@ -2111,6 +2131,8 @@ app.post("/admin/sendPush", requireAdmin(() => true), async (req, res) => {
       tokens,
       notification: { title, body: body || title },
       data: { type },
+      android: androidPushConfig(),
+      apns: APNS_PUSH_CONFIG,
     });
     await logActivity(req.decoded.uid, "ADMIN_PUSH",
       `${title} • ${response.successCount}/${tokens.length} devices • type=${type}`);
@@ -2482,13 +2504,7 @@ async function scrubPublicSecrets() {
     const updates = {};
     snap.forEach((t) => {
       const v = t.val() || {};
-      const st = String(v.status || "").toUpperCase();
-      const finished = st === "COMPLETED" || st === "CANCELLED" || st === "CANCELED";
-      if (finished && (v.roomId || v.roomPassword)) {
-        // Match is over: room credentials have no use any more, remove them from the public node.
-        updates[`tournaments/${t.key}/roomId`] = "";
-        updates[`tournaments/${t.key}/roomPassword`] = "";
-      } else if (v.roomReleased !== true && (v.roomId || v.roomPassword)) {
+      if (v.roomReleased !== true && (v.roomId || v.roomPassword)) {
         updates[`matches/${t.key}/roomRelease/roomId`] = String(v.roomId || "");
         updates[`matches/${t.key}/roomRelease/roomPassword`] = String(v.roomPassword || "");
         updates[`tournaments/${t.key}/roomId`] = "";
@@ -2508,7 +2524,7 @@ async function scrubPublicSecrets() {
     scrubRunning = false;
   }
 }
-setInterval(scrubPublicSecrets, 15_000);
+setInterval(scrubPublicSecrets, 5 * 60_000);
 scrubPublicSecrets();
 
 // Render's free plan puts the service to sleep after ~15 minutes with no
@@ -2774,11 +2790,7 @@ async function processMatchReminders() {
       const mins = Math.max(1, Math.round((job.startAt - Date.now()) / 60000));
       const body = `${job.title} starts in about ${mins} minutes. Get ready!`;
       await createUserNotifications(uids, "Match starting soon ⏰", body, "MATCH_REMINDER", { matchId: job.id });
-      const tokens = [];
-      for (const uid of uids) {
-        const token = (await db.ref(`users/${uid}/fcmToken`).once("value")).val();
-        if (token) tokens.push(token);
-      }
+      const tokens = await getTokensForUids(uids);
       await sendPush(tokens, "Match starting soon ⏰", body, { type: "MATCH_REMINDER", matchId: job.id });
     }
   } catch (error) {
