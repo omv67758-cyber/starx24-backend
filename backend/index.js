@@ -581,6 +581,27 @@ async function getJoinedUids(matchSnapshot) {
 // notices were all silently invisible in the bell (and also never carried a
 // device push from that inbox, since the push above is the only thing that
 // reached the phone).
+/**
+ * Notification "redirect" (admin picks which in-app content a notification opens).
+ * Stored on the Firebase record as redirectType / redirectId / redirectTitle and forwarded
+ * both into each user's inbox record and into the FCM data payload, so the app can open the
+ * exact match / category / wallet screen when the push or inbox row is tapped.
+ */
+function sanitizeRedirect(type, id, title) {
+  const t = String(type || "").trim().toUpperCase();
+  if (!/^[A-Z_]{2,32}$/.test(t) || t === "NONE") return {};
+  return {
+    redirectType: t,
+    redirectId: String(id || "").trim().slice(0, 120),
+    redirectTitle: String(title || "").trim().slice(0, 120),
+  };
+}
+
+function redirectFromSnapshot(item) {
+  return sanitizeRedirect(item.child("redirectType").val(),
+    item.child("redirectId").val(), item.child("redirectTitle").val());
+}
+
 async function createUserNotifications(uids, title, description, type, data = {}) {
   const updates = {};
   for (const uid of uids) {
@@ -771,10 +792,11 @@ async function processBroadcasts() {
           const token = (await db.ref(`users/${uid}/fcmToken`).once("value")).val();
           return typeof token === "string" && token.trim() ? token : null;
         }));
+        const redirect = redirectFromSnapshot(item);
         await createUserNotifications(uids, title, description, "BROADCAST",
-          { announcementId: item.key });
+          { announcementId: item.key, ...redirect });
         await sendPush(tokens.filter(Boolean), title, description,
-          { type: "BROADCAST", announcementId: item.key });
+          { type: "BROADCAST", announcementId: item.key, ...redirect });
       }
     }
   } catch (error) {
@@ -2120,6 +2142,7 @@ app.post("/admin/sendPush", requireAdmin(() => true), async (req, res) => {
   const title = String(req.body?.title || "").trim();
   const body = String(req.body?.body || "").trim();
   const type = String(req.body?.type || "ROOM_RELEASED").trim();
+  const redirect = sanitizeRedirect(req.body?.redirectType, req.body?.redirectId, req.body?.redirectTitle);
   if (!tokens.length || !title) {
     return res.status(400).json({ error: "tokens and title are required" });
   }
@@ -2130,7 +2153,7 @@ app.post("/admin/sendPush", requireAdmin(() => true), async (req, res) => {
     const response = await admin.messaging().sendEachForMulticast({
       tokens,
       notification: { title, body: body || title },
-      data: { type },
+      data: { type, ...redirect },
       android: androidPushConfig(),
       apns: APNS_PUSH_CONFIG,
     });
